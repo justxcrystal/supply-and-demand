@@ -107,8 +107,8 @@ export function synthesize(meta: Market, tf: number, bars = 180): Candle[] {
 }
 
 export async function loadYahoo(meta: Market, tf: number): Promise<Candle[]> {
-  const interval = tf <= 5 ? "5m" : tf <= 15 ? "15m" : tf <= 30 ? "30m" : "1h";
-  const range = tf <= 5 ? "5d" : tf <= 30 ? "30d" : "60d";
+  const interval = tf <= 1 ? "1m" : tf <= 5 ? "5m" : tf <= 15 ? "15m" : tf <= 30 ? "30m" : "1h";
+  const range = tf <= 1 ? "1d" : tf <= 5 ? "5d" : tf <= 30 ? "30d" : "60d";
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(meta.yahoo)}?interval=${interval}&range=${range}`;
   const res = await fetch(url, {
     headers: {
