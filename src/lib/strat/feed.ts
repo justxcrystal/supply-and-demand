@@ -21,7 +21,7 @@ function rand(rng: { x: number }): number {
 export function synthesize(meta: Market, tf: number, bars = 180): Candle[] {
   const rng = { x: seed(meta.id + ":" + tf) || 1 };
   const px0 = BASE[meta.id] ?? 100;
-  const vol = meta.kind === "crypto" ? 0.0055 : meta.kind === "index" ? 0.002 : 0.00085;
+  const vol = meta.kind === "crypto" ? 0.0055 : meta.kind === "index" || meta.kind === "future" ? 0.002 : 0.00085;
   const out: Candle[] = [];
   let px = px0 * (0.98 + rand(rng) * 0.03);
 
