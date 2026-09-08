@@ -3,13 +3,22 @@ import { CatchCard } from "@/components/desk/catch-card";
 import { PriceChart, toHeikin } from "@/components/desk/chart";
 import { GrokPanel } from "@/components/desk/grok-panel";
 import { TradeLockerButton, TradeLockerPanel } from "@/components/desk/tl-login";
-import { mark, nySession, START_EQ, useDesk } from "@/lib/desk-store";
-import { useTl } from "@/lib/tl-store";
+import {
+  CRYPTO_UNLOCK,
+  bookEquity,
+  cryptoLocked,
+  mark,
+  marketAllowed,
+  nySession,
+  useDesk,
+} from "@/lib/desk-store";
+import { sessionEquity, sessionLead, useTl } from "@/lib/tl-store";
+import { accountEquity } from "@/lib/tradelocker";
 import { cn } from "@/lib/utils";
 import { fmt, marketById, UNIVERSE } from "@/lib/strat/universe";
 import type { Analysis, Candle, TpKey } from "@/lib/strat/types";
 
-const TABS = ["XAUUSD", "EURUSD", "NAS100", "BTCUSD", "US30"];
+const TABS = ["BTCUSD", "ETHUSD", "XAUUSD", "EURUSD", "NAS100", "US30"];
 
 function haBias(candles: Candle[]): "bull" | "bear" | "neutral" {
   const t = toHeikin(candles);
@@ -76,6 +85,7 @@ export function Desk() {
   const ha = useDesk((s) => s.ha);
   const flattenAtClose = useDesk((s) => s.flattenAtClose);
   const skin = useDesk((s) => s.skin);
+  const challenge = useDesk((s) => s.challenge);
   const setSymbol = useDesk((s) => s.setSymbol);
   const setTf = useDesk((s) => s.setTf);
   const setRisk = useDesk((s) => s.setRisk);
@@ -91,8 +101,11 @@ export function Desk() {
   const toggleHa = useDesk((s) => s.toggleHa);
   const toggleFlattenAtClose = useDesk((s) => s.toggleFlattenAtClose);
   const toggleSkin = useDesk((s) => s.toggleSkin);
+  const toggleChallenge = useDesk((s) => s.toggleChallenge);
+  const resetChallenge = useDesk((s) => s.resetChallenge);
   const tl = useTl((s) => s.session);
   const lastCopy = useTl((s) => s.lastCopy);
+  const openTrades = useTl((s) => s.openTrades);
   const [clock, setClock] = useState("");
   const [sessionLeft, setSessionLeft] = useState("");
   const [sessions, setSessions] = useState(sessionClocks);
@@ -127,24 +140,26 @@ export function Desk() {
   const last = bars.at(-1);
   const setup = an?.setup;
   const bt = backtests[symbol];
-  const canBuy = Boolean(an?.executable && an.signal === "BUY" && an.bias === "bull");
-  const canSell = Boolean(an?.executable && an.signal === "SELL" && an.bias === "bear");
-
-  const openPnl = positions.reduce((s, p) => {
-    const px = candles[p.sym]?.at(-1)?.c ?? p.entry;
-    return s + mark(p, px).pnl;
-  }, 0);
-  const closedPnl = closed.reduce((s, t) => s + t.pnl, 0);
-  const equity = START_EQ + closedPnl + openPnl;
-  const today = closed
+  const paperEq = bookEquity({ challenge, positions, closed, candles });
+  const locked = cryptoLocked(challenge, paperEq);
+  const allowed = marketAllowed(symbol, challenge, paperEq);
+  const canBuy = Boolean(allowed && an?.executable && an.signal === "BUY" && an.bias === "bull");
+  const canSell = Boolean(allowed && an?.executable && an.signal === "SELL" && an.bias === "bear");
+  const todayPaper = closed
     .filter((t) => t.t.slice(0, 10) === new Date().toISOString().slice(0, 10))
     .reduce((s, t) => s + t.pnl, 0);
+  const gatePct = Math.min(100, (Math.max(0, paperEq) / CRYPTO_UNLOCK) * 100);
+  const lead = sessionLead(tl);
+  const tlEq = sessionEquity(tl);
+  const displayEq = tlEq ?? (tl ? undefined : paperEq);
+  const todayAmt = lead?.todayNet ?? (tl ? undefined : todayPaper);
+  const ccy = lead?.currency ?? "USD";
 
   const accLabel = useMemo(() => {
-    if (!tl) return "PAPER · S&D DESK";
-    const a = tl.accounts.find((x) => x.accNum === tl.accNum);
-    return a ? `${a.name}` : `${tl.server} · ${tl.env}`;
-  }, [tl]);
+    if (!tl) return challenge ? "PAPER · $100 CHALLENGE" : "PAPER · S&D DESK";
+    const env = tl.env.toUpperCase();
+    return lead ? `TRADELOCKER ${env} · ${lead.name}` : `TRADELOCKER ${env} · ${tl.server}`;
+  }, [tl, challenge, lead]);
 
   return (
     <div className="flex min-h-dvh flex-col bg-transparent text-fg">
@@ -172,6 +187,18 @@ export function Desk() {
             {skin === "gamer" ? "Command" : "Gamer girl"}
           </button>
           <TradeLockerButton />
+          <button
+            type="button"
+            data-challenge-toggle=""
+            aria-label={challenge ? "Turn off $100 challenge" : "Turn on $100 challenge"}
+            onClick={toggleChallenge}
+            className={cn(
+              "hud-chip h-10 px-4 font-mono text-xs font-semibold uppercase tracking-wider",
+              challenge ? "hud-pulse bg-entry text-logo-fg" : "border border-line bg-panel2 text-muted",
+            )}
+          >
+            {challenge ? "$100 on" : "$100 off"}
+          </button>
           <span className="hud-chip border border-line bg-panel2 px-3 py-2 font-mono text-[11px] text-muted">
             {flattenAtClose ? "FLAT @ 16:00 ET" : "HOLD"} · {sessionLeft}
           </span>
@@ -210,7 +237,17 @@ export function Desk() {
       </div>
 
       <div className="flex gap-2 overflow-x-auto px-4 pb-2">
-        <Chip active={!tl}>{tl ? accLabel : "PAPER"}</Chip>
+        <Chip active={!tl}>{tl ? accLabel : challenge ? "$100" : "PAPER"}</Chip>
+        {challenge ? (
+          <span
+            className={cn(
+              "hud-chip shrink-0 px-3 py-1.5 font-mono text-[10px] uppercase tracking-wider",
+              locked ? "bg-flatten/20 text-flatten" : "bg-buy/15 text-buy",
+            )}
+          >
+            {locked ? `Crypto only · unlock $${CRYPTO_UNLOCK}` : "Unlocked · FX · gold · indices"}
+          </span>
+        ) : null}
         {tl ? (
           <button
             type="button"
@@ -223,48 +260,62 @@ export function Desk() {
             COPY {tl.copyIds.length}
           </button>
         ) : null}
-        {tl?.accounts.map((a) => (
-          <button
-            key={a.accNum}
-            type="button"
-            onClick={() => useTl.getState().toggleCopy(a.accNum)}
-            className={cn(
-              "hud-chip h-9 shrink-0 px-3 font-mono text-[10px]",
-              tl.copyIds.includes(a.accNum) ? "bg-entry/20 text-entry" : "bg-panel2 text-muted",
-            )}
-          >
-            {a.id} · {a.currency}
-          </button>
-        ))}
+        {tl?.accounts.map((a) => {
+          const eq = accountEquity(a);
+          const isLead = a.accNum === tl.accNum;
+          return (
+            <button
+              key={a.accNum}
+              type="button"
+              onClick={() => useTl.getState().pickAccount(a.accNum)}
+              className={cn(
+                "hud-chip h-9 shrink-0 px-3 font-mono text-[10px]",
+                isLead ? "bg-entry/20 text-entry" : tl.copyIds.includes(a.accNum) ? "bg-buy/10 text-buy" : "bg-panel2 text-muted",
+              )}
+            >
+              {a.id}
+              {eq != null ? ` · ${money(eq, a.currency)}` : ` · ${a.currency}`}
+              {isLead ? " · LEAD" : ""}
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex gap-2 overflow-x-auto px-4 pb-3">
-        {TABS.filter((id) => UNIVERSE.some((m) => m.id === id)).map((id) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setSymbol(id)}
-            className={cn(
-              "hud-chip h-9 px-4 font-mono text-xs uppercase tracking-wider",
-              symbol === id ? "bg-fg text-bg" : "text-muted hover:text-fg",
-            )}
-          >
-            {id}
-          </button>
-        ))}
-        {UNIVERSE.filter((m) => !TABS.includes(m.id)).map((m) => (
-          <button
-            key={m.id}
-            type="button"
-            onClick={() => setSymbol(m.id)}
-            className={cn(
-              "hud-chip h-9 px-3 font-mono text-[11px] uppercase",
-              symbol === m.id ? "bg-fg text-bg" : "text-muted",
-            )}
-          >
-            {m.id}
-          </button>
-        ))}
+        {TABS.filter((id) => UNIVERSE.some((m) => m.id === id)).map((id) => {
+          const open = marketAllowed(id, challenge, paperEq);
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setSymbol(id)}
+              className={cn(
+                "hud-chip h-9 px-4 font-mono text-xs uppercase tracking-wider",
+                symbol === id ? "bg-fg text-bg" : open ? "text-muted hover:text-fg" : "text-muted/50",
+              )}
+            >
+              {id}
+              {!open ? " · LOCK" : ""}
+            </button>
+          );
+        })}
+        {UNIVERSE.filter((m) => !TABS.includes(m.id)).map((m) => {
+          const open = marketAllowed(m.id, challenge, paperEq);
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setSymbol(m.id)}
+              className={cn(
+                "hud-chip h-9 px-3 font-mono text-[11px] uppercase",
+                symbol === m.id ? "bg-fg text-bg" : open ? "text-muted" : "text-muted/50",
+              )}
+            >
+              {m.id}
+              {!open ? " · LOCK" : ""}
+            </button>
+          );
+        })}
       </div>
 
       <main className="grid min-h-0 flex-1 gap-3 px-4 pb-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.9fr)]">
@@ -291,7 +342,7 @@ export function Desk() {
                   {scanning ? "SCANNING" : nySession().open ? "OPEN" : "CLOSED"} · NY {clock}
                 </span>
                 <div className="flex gap-1">
-                  {[5, 15, 30, 60].map((v) => (
+                  {[1, 5, 15, 30, 60].map((v) => (
                     <button
                       key={v}
                       type="button"
@@ -321,6 +372,9 @@ export function Desk() {
                   <option value="1">Risk 1.0%</option>
                   <option value="2">Risk 2.0%</option>
                   <option value="3">Risk 3.0%</option>
+                  <option value="5">Risk 5.0%</option>
+                  <option value="10">Risk 10%</option>
+                  <option value="15">Risk 15%</option>
                 </select>
               </div>
             </div>
@@ -328,9 +382,11 @@ export function Desk() {
               <PriceChart symbol={symbol} candles={bars} analysis={an} ha={ha} />
             </div>
             <p className="mt-2 font-mono text-[10px] uppercase tracking-wide text-muted">
-              {setup
-                ? `${setup.reason} · Q ${setup.score}/99 · TP1–TP6 = 1R–6R`
-                : "AMD: accumulate → manipulate → distribute. Auto only with the trend."}
+              {!allowed
+                ? `$100 challenge · crypto only until $${CRYPTO_UNLOCK}. Gold, FX and indices stay locked.`
+                : setup
+                  ? `${setup.reason} · Q ${setup.score}/99 · TP1–TP6 = 1R–6R`
+                  : "AMD: accumulate → manipulate → distribute. Auto only with the trend."}
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               <button
@@ -360,9 +416,18 @@ export function Desk() {
           </section>
 
           <section className="hud-panel p-4">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-muted">Open positions</p>
+            <p className="font-mono text-[10px] uppercase tracking-widest text-muted">
+              Open positions
+              {positions.length + openTrades.length > 0
+                ? ` · ${positions.length + openTrades.length}`
+                : ""}
+            </p>
             {positions.length === 0 ? (
-              <p className="mt-3 font-mono text-xs text-muted">Armed · auto with-trend · trail · TP6. Waiting for distribution retest.</p>
+              <p className="mt-3 font-mono text-xs text-muted">
+                {tl
+                  ? "No paper trades."
+                  : "Armed · auto with-trend · trail · TP6. Waiting for distribution retest."}
+              </p>
             ) : (
               positions.map((p) => {
                 const px = candles[p.sym]?.at(-1)?.c ?? p.entry;
@@ -405,6 +470,34 @@ export function Desk() {
                 );
               })
             )}
+            {tl ? (
+              <div className="mt-4">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-muted">
+                  Broker · {openTrades.length} open
+                </p>
+                {openTrades.length === 0 ? (
+                  <p className="mt-2 font-mono text-xs text-muted">No broker trades open.</p>
+                ) : (
+                  <div className="mt-2 max-h-64 space-y-2 overflow-auto">
+                    {openTrades.map((t) => (
+                      <div key={`${t.accNum}-${t.id}`} className="rounded-2xl bg-panel2 p-3">
+                        <div className="flex justify-between gap-2 font-mono text-sm">
+                          <span>
+                            {t.side} {t.symbol}
+                          </span>
+                          <span className={t.pnl == null ? "text-muted" : t.pnl >= 0 ? "text-buy" : "text-sell"}>
+                            {t.pnl == null ? "—" : money(t.pnl, t.currency)}
+                          </span>
+                        </div>
+                        <p className="mt-1 font-mono text-[10px] text-muted">
+                          {t.qty} · avg {t.entry ? t.entry.toLocaleString(undefined, { maximumFractionDigits: 5 }) : "—"} · {t.accountName}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : null}
             <p className="mt-4 font-mono text-[10px] uppercase tracking-widest text-muted">Auto-close</p>
             <div className="mt-2 flex flex-wrap gap-2">
               {(["off", "tp1", "tp2", "tp3", "tp4", "tp5", "tp6"] as const).map((v) => (
@@ -439,15 +532,57 @@ export function Desk() {
         <div className="flex flex-col gap-3">
           <section className="hud-panel p-4">
             <p className="break-words font-mono text-[10px] uppercase tracking-wide text-muted">{accLabel}</p>
-            <p className="mt-2 font-display text-5xl tabular-nums tracking-tight">{money(equity)}</p>
-            <p className={cn("mt-1 font-mono text-sm", today >= 0 ? "text-buy" : "text-sell")}>Today {money(today)}</p>
+            <p className="mt-2 font-display text-5xl tabular-nums tracking-tight" data-tl-equity="">
+              {displayEq == null ? "—" : money(displayEq, ccy)}
+            </p>
+            <p
+              className={cn(
+                "mt-1 font-mono text-sm",
+                (todayAmt ?? todayPaper) >= 0 ? "text-buy" : "text-sell",
+              )}
+            >
+              Today {todayAmt == null ? money(todayPaper) : money(todayAmt, ccy)}
+              {lead?.openPnl != null ? ` · Open ${money(lead.openPnl, ccy)}` : ""}
+            </p>
+            {lead?.available != null ? (
+              <p className="mt-1 font-mono text-[11px] text-muted">Available {money(lead.available, ccy)}</p>
+            ) : null}
+            {tl ? (
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-wider text-muted">
+                Paper {money(paperEq)}
+                {challenge ? " · $100 book" : " · $25k desk"}
+              </p>
+            ) : null}
+            {challenge ? (
+              <div className="mt-3">
+                <div className="flex items-center justify-between font-mono text-[10px] uppercase tracking-wider text-muted">
+                  <span>{locked ? "Crypto gate" : "Gate cleared"}</span>
+                  <span>
+                    {money(paperEq)} / {money(CRYPTO_UNLOCK)}
+                  </span>
+                </div>
+                <div className="mt-1 h-1.5 overflow-hidden bg-panel2">
+                  <div
+                    className={cn("h-full", locked ? "bg-flatten" : "bg-buy")}
+                    style={{ width: `${gatePct}%` }}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={resetChallenge}
+                  className="mt-3 font-mono text-[10px] uppercase tracking-wider text-muted hover:text-fg"
+                >
+                  Restart $100
+                </button>
+              </div>
+            ) : null}
             <Toggle label="Live execution" hint="Auto BUY/SELL with trend · trail · TP6" on={armed} onChange={toggleArmed} />
             <Toggle
               label="Send to TradeLocker"
               hint={
                 tl
-                  ? `Copy ${tl.copyIds.length} account${tl.copyIds.length === 1 ? "" : "s"} · market + SL + TP6`
-                  : "Log in, tap accounts to copy, then arm send"
+                  ? `Copy ${tl.copyIds.length} ${tl.env} account${tl.copyIds.length === 1 ? "" : "s"} · market + SL + TP6`
+                  : "Log into Broker or Live, tap accounts to copy, then arm send"
               }
               on={sendTl}
               onChange={toggleSendTl}
@@ -530,7 +665,11 @@ export function Desk() {
       </main>
 
       <footer className="flex flex-wrap items-center justify-between gap-2 px-4 py-3 font-mono text-[10px] text-muted">
-        <span>Supply and Demand · paper P&L. Trail + TP6. Flatten at NY close.</span>
+        <span>
+          {challenge
+            ? `$100 challenge · crypto only until $${CRYPTO_UNLOCK}. Trail + TP6. Flatten at NY close.`
+            : "Supply and Demand · paper P&L. Trail + TP6. Flatten at NY close."}
+        </span>
         <span className={skin === "gamer" ? "text-entry" : ""}>@justxcrystal777</span>
       </footer>
       <TradeLockerPanel />
@@ -655,9 +794,17 @@ function Spark({ curve }: { curve: number[] }) {
   );
 }
 
-function money(n: number) {
-  const sign = n < 0 ? "-" : "";
-  return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+function money(n: number, ccy = "USD") {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: ccy || "USD",
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    const sign = n < 0 ? "-" : "";
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
 }
 
 function tfLabel(tf: number) {
