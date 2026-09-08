@@ -6,8 +6,10 @@ import { fetchOhlc } from "./strat/ohlc";
 import { rTargets, tpIndex, trailStop } from "./strat/targets";
 import { tlPlace } from "./tradelocker";
 import { useTl } from "./tl-store";
-import { marketById, UNIVERSE } from "./strat/universe";
-import type { Analysis, BacktestStats, Candle, ClosedTrade, Position, Signal, TpKey } from "./strat/types";
+import { wbPlace } from "./webull";
+import { useWb } from "./wb-store";
+import { marketById, marketsFor, UNIVERSE } from "./strat/universe";
+import type { Analysis, BacktestStats, Book, Candle, ClosedTrade, Position, Signal, TpKey } from "./strat/types";
 
 export const DESK_EQ = 25000;
 export const CHALLENGE_EQ = 100;
@@ -21,6 +23,7 @@ type Persisted = {
   symbol?: string;
   tf?: number;
   risk?: string;
+  riskDefault?: number;
   positions?: Position[];
   closed?: ClosedTrade[];
   deskPositions?: Position[];
@@ -36,6 +39,8 @@ type Persisted = {
   flattenAtClose?: boolean;
   lastFlatDate?: string;
   skin?: Skin;
+  book?: Book;
+  sendWb?: boolean;
 };
 
 function loadVault(): Persisted {
@@ -54,6 +59,7 @@ function saveVault(s: DeskState) {
     symbol: s.symbol,
     tf: s.tf,
     risk: s.risk,
+    riskDefault: 3,
     positions: s.positions,
     closed: s.closed.slice(-200),
     deskPositions: s.deskPositions,
@@ -69,6 +75,8 @@ function saveVault(s: DeskState) {
     flattenAtClose: s.flattenAtClose,
     lastFlatDate: s.lastFlatDate,
     skin: s.skin,
+    book: s.book,
+    sendWb: s.sendWb,
   };
   localStorage.setItem(VAULT, JSON.stringify(t));
 }
@@ -145,11 +153,15 @@ type DeskState = {
   flattenAtClose: boolean;
   lastFlatDate: string;
   skin: Skin;
+  book: Book;
+  sendWb: boolean;
   setSymbol: (id: string) => void;
   setTf: (tf: number) => void;
   setRisk: (r: string) => void;
+  setBook: (book: Book) => void;
   toggleArmed: () => void;
   toggleSendTl: () => void;
+  toggleSendWb: () => void;
   toggleTrail: () => void;
   toggleHa: () => void;
   toggleFlattenAtClose: () => void;
@@ -171,20 +183,17 @@ const deskClosed = vault.deskClosed ?? (vault.challenge === true ? [] : (vault.c
 const challengePositions = vault.challengePositions ?? (vault.challenge === true ? vault.positions ?? [] : []);
 const challengeClosed = vault.challengeClosed ?? (vault.challenge === true ? vault.closed ?? [] : []);
 
-function bootSymbol() {
-  const id = vault.symbol ?? (challengeOn ? "BTCUSD" : "NAS100");
-  try {
-    if (challengeOn && marketById(id).kind !== "crypto") return "BTCUSD";
-  } catch {
-    return challengeOn ? "BTCUSD" : "NAS100";
-  }
-  return id;
+function pickSymbol(book: Book, challenge: boolean, equity: number, current?: string) {
+  const list = marketsFor(book);
+  if (current && list.some((m) => m.id === current) && marketAllowed(current, challenge, equity)) return current;
+  const open = list.find((m) => marketAllowed(m.id, challenge, equity));
+  return open?.id ?? list[0]?.id ?? (book === "futures" ? "MNQ" : "BTCUSD");
 }
 
 export const useDesk = create<DeskState>((set, get) => ({
-  symbol: bootSymbol(),
+  symbol: pickSymbol(vault.book === "futures" ? "futures" : "forex", challengeOn, CHALLENGE_EQ, vault.symbol),
   tf: vault.tf ?? 5,
-  risk: vault.risk ?? "1",
+  risk: vault.riskDefault === 3 ? (vault.risk ?? "3") : "3",
   candles: {},
   analysis: {},
   backtests: {},
@@ -200,20 +209,33 @@ export const useDesk = create<DeskState>((set, get) => ({
   challenge: challengeOn,
   armed: vault.armed ?? false,
   sendTl: vault.sendTl ?? false,
+  sendWb: vault.sendWb ?? false,
   autoTp: vault.autoTp ?? "tp6",
   trailOn: vault.trailOn ?? true,
   ha: vault.ha ?? true,
   flattenAtClose: vault.flattenAtClose ?? true,
   lastFlatDate: vault.lastFlatDate ?? "",
   skin: vault.skin === "gamer" ? "gamer" : "command",
+  book: vault.book === "futures" ? "futures" : "forex",
   setSymbol: (id) => set({ symbol: id }),
   setTf: (tf) => {
     set({ tf });
     void get().scanAll();
   },
   setRisk: (r) => set({ risk: r }),
+  setBook: (book) => {
+    const s = get();
+    const eq = bookEquity({
+      challenge: s.challenge,
+      positions: s.positions,
+      closed: s.closed,
+      candles: s.candles,
+    });
+    set({ book, symbol: pickSymbol(book, s.challenge, eq, s.symbol) });
+  },
   toggleArmed: () => set({ armed: !get().armed }),
   toggleSendTl: () => set({ sendTl: !get().sendTl }),
+  toggleSendWb: () => set({ sendWb: !get().sendWb }),
   toggleTrail: () => set({ trailOn: !get().trailOn }),
   toggleHa: () => set({ ha: !get().ha }),
   toggleFlattenAtClose: () => set({ flattenAtClose: !get().flattenAtClose }),
@@ -230,20 +252,22 @@ export const useDesk = create<DeskState>((set, get) => ({
       });
       return;
     }
-    let symbol = s.symbol;
     const eq = bookEquity({
       challenge: true,
       positions: s.challengePositions,
       closed: s.challengeClosed,
       candles: s.candles,
     });
-    if (!marketAllowed(symbol, true, eq)) symbol = "BTCUSD";
+    let book: Book = s.book;
+    if (cryptoLocked(true, eq) && book === "futures") book = "forex";
+    const symbol = pickSymbol(book, true, eq, s.symbol);
     set({
       challenge: true,
       deskPositions: s.positions,
       deskClosed: s.closed,
       positions: s.challengePositions,
       closed: s.challengeClosed,
+      book,
       symbol,
     });
   },
@@ -373,7 +397,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   },
   paper: (side: Signal) => {
     if (side !== "BUY" && side !== "SELL") return;
-    const { symbol, analysis, candles, risk, positions, sendTl, challenge, closed } = get();
+    const { symbol, analysis, candles, risk, positions, sendTl, sendWb, challenge, closed, book } = get();
     const eq = bookEquity({ challenge, positions, closed, candles });
     if (!marketAllowed(symbol, challenge, eq)) return;
     const a = analysis[symbol];
@@ -389,10 +413,14 @@ export const useDesk = create<DeskState>((set, get) => ({
     const tl = useTl.getState();
     const session = tl.session;
     const copies = session ? session.accounts.filter((acc) => session.copyIds.includes(acc.accNum)) : [];
+    const wb = useWb.getState().session;
+    const wbLead = wb ? (wb.accounts.find((a) => a.id === wb.accountId) ?? wb.accounts[0]) : undefined;
     const targets =
-      copies.length > 0
+      book === "forex" && copies.length > 0
         ? copies.map((acc) => ({ key: acc.accNum, label: acc.id }))
-        : [{ key: "PAPER", label: "PAPER" }];
+        : book === "futures" && wbLead
+          ? [{ key: wbLead.id, label: wbLead.label }]
+          : [{ key: "PAPER", label: "PAPER" }];
     const fresh: Position[] = [];
     for (const t of targets) {
       if (positions.some((p) => p.sym === symbol && p.account === t.key)) continue;
@@ -420,7 +448,7 @@ export const useDesk = create<DeskState>((set, get) => ({
       positions: nextPos,
       ...(challenge ? { challengePositions: nextPos } : { deskPositions: nextPos }),
     });
-    if (sendTl && session && copies.length) {
+    if (book === "forex" && sendTl && session && copies.length) {
       const qty = Math.max(0.01, Math.round(Number(risk) * 100) / 10000);
       void Promise.all(
         copies.map(async (acc) => {
@@ -450,6 +478,24 @@ export const useDesk = create<DeskState>((set, get) => ({
           }
         }),
       ).then((rows) => useTl.getState().setLastCopy(rows));
+    }
+    if (book === "futures" && sendWb && wb && wbLead && meta.wb) {
+      void wbPlace({
+        data: {
+          env: wb.env,
+          appKey: wb.appKey,
+          appSecret: wb.appSecret,
+          token: wb.token,
+          accountId: wbLead.id,
+          product: meta.wb,
+          side,
+          qty: 1,
+        },
+      })
+        .then(() => useWb.getState().setLastCopy([{ acc: wbLead.label, ok: true, msg: `copied ${meta.wb}` }]))
+        .catch((e) =>
+          useWb.getState().setLastCopy([{ acc: wbLead.label, ok: false, msg: e instanceof Error ? e.message : "copy failed" }]),
+        );
     }
   },
   flatten: (reason = "FLATTEN") => {
