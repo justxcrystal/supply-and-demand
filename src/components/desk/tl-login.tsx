@@ -16,11 +16,8 @@ function money(n: number, ccy = "USD") {
   }
 }
 
-export function TradeLockerButton() {
+export function TradeLockerRuntime() {
   const session = useTl((s) => s.session);
-  const setOpen = useTl((s) => s.setOpen);
-  const open = useTl((s) => s.open);
-  const logout = useTl((s) => s.logout);
   const hydrate = useTl((s) => s.hydrate);
   const refreshMoney = useTl((s) => s.refreshMoney);
   const refreshTrades = useTl((s) => s.refreshTrades);
@@ -40,39 +37,7 @@ export function TradeLockerButton() {
     return () => window.clearInterval(t);
   }, [session?.accessToken, refreshMoney, refreshTrades]);
 
-  if (session) {
-    const acc = session.accounts.find((a) => a.accNum === session.accNum) ?? session.accounts[0];
-    const eq = accountEquity(acc);
-    return (
-      <div className="flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="hud-chip h-10 border border-buy-line bg-buy-bg px-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-buy"
-        >
-          TL {session.env.toUpperCase()}
-          {eq != null ? ` · ${money(eq, acc?.currency)}` : acc ? ` · ${acc.id}` : ""}
-        </button>
-        <button
-          type="button"
-          onClick={logout}
-          className="hud-chip h-10 border border-line bg-panel2 px-3 font-mono text-[11px] uppercase tracking-wider text-muted"
-        >
-          Disconnect
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={() => setOpen(true)}
-      className="hud-chip h-10 border border-line bg-panel2 px-3 font-mono text-xs font-semibold uppercase tracking-wider"
-    >
-      TradeLocker login
-    </button>
-  );
+  return null;
 }
 
 export function TradeLockerPanel() {
