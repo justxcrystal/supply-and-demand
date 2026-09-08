@@ -1,9 +1,10 @@
 import type { Market } from "./types";
 
 export const UNIVERSE: Market[] = [
+  { id: "BTCUSD", yahoo: "BTC-USD", name: "Bitcoin", kind: "crypto", pip: 1, digits: 1 },
+  { id: "ETHUSD", yahoo: "ETH-USD", name: "Ethereum", kind: "crypto", pip: 0.01, digits: 2 },
   { id: "NAS100", yahoo: "NQ=F", name: "Nasdaq 100", kind: "index", pip: 0.25, digits: 2 },
   { id: "US30", yahoo: "YM=F", name: "Dow Jones 30", kind: "index", pip: 1, digits: 1 },
-  { id: "BTCUSD", yahoo: "BTC-USD", name: "Bitcoin", kind: "crypto", pip: 1, digits: 1 },
   { id: "EURUSD", yahoo: "EURUSD=X", name: "Euro / Dollar", kind: "fx", pip: 0.0001, digits: 5 },
   { id: "GBPUSD", yahoo: "GBPUSD=X", name: "Cable", kind: "fx", pip: 0.0001, digits: 5 },
   { id: "USDJPY", yahoo: "USDJPY=X", name: "Dollar / Yen", kind: "fx", pip: 0.01, digits: 3 },
@@ -18,9 +19,10 @@ export const UNIVERSE: Market[] = [
 ];
 
 export const BASE: Record<string, number> = {
+  BTCUSD: 64250,
+  ETHUSD: 3480,
   NAS100: 19680,
   US30: 41520,
-  BTCUSD: 64250,
   EURUSD: 1.0874,
   GBPUSD: 1.3122,
   USDJPY: 146.82,
