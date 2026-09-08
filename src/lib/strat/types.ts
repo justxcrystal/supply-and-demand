@@ -1,4 +1,5 @@
-export type MarketKind = "index" | "crypto" | "fx" | "metal";
+export type MarketKind = "index" | "crypto" | "fx" | "metal" | "future";
+export type Book = "forex" | "futures";
 export type Signal = "BUY" | "SELL" | "WAIT";
 export type ZoneType = "DEMAND" | "SUPPLY";
 export type Bias = "bull" | "bear" | "neutral";
@@ -10,8 +11,10 @@ export type Market = {
   yahoo: string;
   name: string;
   kind: MarketKind;
+  book: Book;
   pip: number;
   digits: number;
+  wb?: string;
 };
 
 export type Candle = {
