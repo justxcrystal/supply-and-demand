@@ -1,7 +1,20 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { useTl } from "@/lib/tl-store";
-import type { TlEnv } from "@/lib/tradelocker";
+import { accountEquity, type TlEnv } from "@/lib/tradelocker";
 import { cn } from "@/lib/utils";
+
+function money(n: number, ccy = "USD") {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency: ccy || "USD",
+      maximumFractionDigits: 2,
+    }).format(n);
+  } catch {
+    const sign = n < 0 ? "-" : "";
+    return `${sign}$${Math.abs(n).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+  }
+}
 
 export function TradeLockerButton() {
   const session = useTl((s) => s.session);
@@ -9,13 +22,27 @@ export function TradeLockerButton() {
   const open = useTl((s) => s.open);
   const logout = useTl((s) => s.logout);
   const hydrate = useTl((s) => s.hydrate);
+  const refreshMoney = useTl((s) => s.refreshMoney);
+  const refreshTrades = useTl((s) => s.refreshTrades);
 
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
+  useEffect(() => {
+    if (!session) return;
+    void refreshMoney();
+    void refreshTrades();
+    const t = window.setInterval(() => {
+      void refreshMoney();
+      void refreshTrades();
+    }, 12000);
+    return () => window.clearInterval(t);
+  }, [session?.accessToken, refreshMoney, refreshTrades]);
+
   if (session) {
     const acc = session.accounts.find((a) => a.accNum === session.accNum) ?? session.accounts[0];
+    const eq = accountEquity(acc);
     return (
       <div className="flex items-center gap-2">
         <button
@@ -24,7 +51,7 @@ export function TradeLockerButton() {
           className="hud-chip h-10 border border-buy-line bg-buy-bg px-3 font-mono text-[11px] font-semibold uppercase tracking-wider text-buy"
         >
           TL {session.env.toUpperCase()}
-          {acc ? ` · ${acc.id}` : ""}
+          {eq != null ? ` · ${money(eq, acc?.currency)}` : acc ? ` · ${acc.id}` : ""}
         </button>
         <button
           type="button"
@@ -55,10 +82,11 @@ export function TradeLockerPanel() {
   const error = useTl((s) => s.error);
   const session = useTl((s) => s.session);
   const login = useTl((s) => s.login);
+  const openTrades = useTl((s) => s.openTrades);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [server, setServer] = useState("");
-  const [env, setEnv] = useState<TlEnv>("demo");
+  const [env, setEnv] = useState<TlEnv>("broker");
 
   if (!open) return null;
 
@@ -83,24 +111,41 @@ export function TradeLockerPanel() {
             <p className="font-mono text-[10px] uppercase tracking-wider text-muted">
               Copy group · {session.copyIds.length} selected
             </p>
-            <div className="max-h-48 space-y-1 overflow-auto">
+            <div className="max-h-56 space-y-1 overflow-auto">
               {session.accounts.map((a) => {
                 const on = session.copyIds.includes(a.accNum);
+                const isLead = a.accNum === session.accNum;
+                const eq = accountEquity(a);
                 return (
-                  <button
+                  <div
                     key={a.accNum}
-                    type="button"
-                    onClick={() => useTl.getState().toggleCopy(a.accNum)}
                     className={cn(
-                      "flex h-10 w-full items-center justify-between rounded-lg px-3 font-mono text-[11px]",
-                      on ? "bg-buy-bg text-buy" : "bg-panel2 text-muted",
+                      "flex h-12 w-full items-center gap-1 rounded-lg font-mono text-[11px]",
+                      isLead ? "bg-buy-bg text-buy" : on ? "bg-entry/10 text-entry" : "bg-panel2 text-muted",
                     )}
                   >
-                    <span>
-                      {a.id} · {a.currency}
-                    </span>
-                    <span>{on ? "COPY" : "off"}</span>
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => useTl.getState().pickAccount(a.accNum)}
+                      className="min-w-0 flex-1 px-3 text-left"
+                    >
+                      <span className="block truncate">
+                        {a.id} · {a.currency}
+                        {isLead ? " · LEAD" : ""}
+                      </span>
+                      <span className="block text-[10px] opacity-80">
+                        {eq != null ? money(eq, a.currency) : "—"}
+                        {a.available != null ? ` · avail ${money(a.available, a.currency)}` : ""}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => useTl.getState().toggleCopy(a.accNum)}
+                      className="h-full px-3 text-[10px] uppercase"
+                    >
+                      {on ? "COPY" : "off"}
+                    </button>
+                  </div>
                 );
               })}
             </div>
@@ -111,9 +156,28 @@ export function TradeLockerPanel() {
             >
               {session.copyIds.length < session.accounts.length ? "Select all" : "Lead only"}
             </button>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-muted">
+              Open trades · {openTrades.length}
+            </p>
+            {openTrades.length === 0 ? (
+              <p className="font-mono text-[11px] text-muted">None on this login.</p>
+            ) : (
+              <div className="max-h-40 space-y-1 overflow-auto">
+                {openTrades.map((t) => (
+                  <div key={`${t.accNum}-${t.id}`} className="flex justify-between gap-2 rounded-lg bg-panel2 px-3 py-2 font-mono text-[11px]">
+                    <span className="truncate">
+                      {t.side} {t.symbol} · {t.qty}
+                    </span>
+                    <span className={t.pnl == null ? "text-muted" : t.pnl >= 0 ? "text-buy" : "text-sell"}>
+                      {t.pnl == null ? "—" : money(t.pnl, t.currency)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
             <p className="font-mono text-[10px] text-muted">
-              Tap accounts to include in the copy group. BUY/SELL clones the ticket to every selected account. Turn on
-              Send to TradeLocker to fire live market orders with SL.
+              Equity is live from TradeLocker account state (projected balance). Tap an account to make it the lead
+              number on the desk. BUY/SELL clones the ticket to every COPY account.
             </p>
           </div>
         ) : (
@@ -154,7 +218,7 @@ export function TradeLockerPanel() {
               />
             </Field>
             <div className="flex gap-2">
-              {(["demo", "live"] as const).map((v) => (
+              {(["broker", "live"] as const).map((v) => (
                 <button
                   key={v}
                   type="button"
@@ -177,7 +241,7 @@ export function TradeLockerPanel() {
               {busy ? "Connecting…" : "Log in"}
             </button>
             <p className="font-mono text-[10px] text-muted">
-              Uses TradeLocker Public API JWT. Demo = demo.tradelocker.com, Live = live.tradelocker.com.
+              Same login as TradeLocker web. Broker is your personal broker account. Live is live.tradelocker.com.
             </p>
           </form>
         )}
