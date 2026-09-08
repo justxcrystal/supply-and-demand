@@ -9,7 +9,10 @@ import { useTl } from "./tl-store";
 import { marketById, UNIVERSE } from "./strat/universe";
 import type { Analysis, BacktestStats, Candle, ClosedTrade, Position, Signal, TpKey } from "./strat/types";
 
-export const START_EQ = 25000;
+export const DESK_EQ = 25000;
+export const CHALLENGE_EQ = 100;
+export const CRYPTO_UNLOCK = 200;
+export const START_EQ = DESK_EQ;
 const VAULT = "sd.desk.vault.v1";
 
 type Skin = "command" | "gamer";
@@ -20,6 +23,11 @@ type Persisted = {
   risk?: string;
   positions?: Position[];
   closed?: ClosedTrade[];
+  deskPositions?: Position[];
+  deskClosed?: ClosedTrade[];
+  challengePositions?: Position[];
+  challengeClosed?: ClosedTrade[];
+  challenge?: boolean;
   armed?: boolean;
   sendTl?: boolean;
   autoTp?: TpKey;
@@ -48,6 +56,11 @@ function saveVault(s: DeskState) {
     risk: s.risk,
     positions: s.positions,
     closed: s.closed.slice(-200),
+    deskPositions: s.deskPositions,
+    deskClosed: s.deskClosed.slice(-200),
+    challengePositions: s.challengePositions,
+    challengeClosed: s.challengeClosed.slice(-200),
+    challenge: s.challenge,
     armed: s.armed,
     sendTl: s.sendTl,
     autoTp: s.autoTp,
@@ -76,6 +89,37 @@ export function mark(pos: Position, price: number) {
   return { r, pnl: r * pos.riskAmt };
 }
 
+export function startEq(challenge: boolean) {
+  return challenge ? CHALLENGE_EQ : DESK_EQ;
+}
+
+export function bookEquity(args: {
+  challenge: boolean;
+  positions: Position[];
+  closed: ClosedTrade[];
+  candles: Record<string, Candle[]>;
+}) {
+  const openPnl = args.positions.reduce((s, p) => {
+    const px = args.candles[p.sym]?.at(-1)?.c ?? p.entry;
+    return s + mark(p, px).pnl;
+  }, 0);
+  const closedPnl = args.closed.reduce((s, t) => s + t.pnl, 0);
+  return startEq(args.challenge) + closedPnl + openPnl;
+}
+
+export function cryptoLocked(challenge: boolean, equity: number) {
+  return challenge && equity < CRYPTO_UNLOCK;
+}
+
+export function marketAllowed(id: string, challenge: boolean, equity: number) {
+  if (!cryptoLocked(challenge, equity)) return true;
+  try {
+    return marketById(id).kind === "crypto";
+  } catch {
+    return false;
+  }
+}
+
 type DeskState = {
   symbol: string;
   tf: number;
@@ -88,6 +132,11 @@ type DeskState = {
   feedLabel: string;
   positions: Position[];
   closed: ClosedTrade[];
+  deskPositions: Position[];
+  deskClosed: ClosedTrade[];
+  challengePositions: Position[];
+  challengeClosed: ClosedTrade[];
+  challenge: boolean;
   armed: boolean;
   sendTl: boolean;
   autoTp: TpKey;
@@ -105,6 +154,8 @@ type DeskState = {
   toggleHa: () => void;
   toggleFlattenAtClose: () => void;
   toggleSkin: () => void;
+  toggleChallenge: () => void;
+  resetChallenge: () => void;
   setAutoTp: (v: TpKey) => void;
   scanAll: () => Promise<void>;
   tickSim: () => void;
@@ -114,9 +165,24 @@ type DeskState = {
 };
 
 const vault = loadVault();
+const challengeOn = vault.challenge ?? true;
+const deskPositions = vault.deskPositions ?? (vault.challenge === true ? [] : (vault.positions ?? []));
+const deskClosed = vault.deskClosed ?? (vault.challenge === true ? [] : (vault.closed ?? []));
+const challengePositions = vault.challengePositions ?? (vault.challenge === true ? vault.positions ?? [] : []);
+const challengeClosed = vault.challengeClosed ?? (vault.challenge === true ? vault.closed ?? [] : []);
+
+function bootSymbol() {
+  const id = vault.symbol ?? (challengeOn ? "BTCUSD" : "NAS100");
+  try {
+    if (challengeOn && marketById(id).kind !== "crypto") return "BTCUSD";
+  } catch {
+    return challengeOn ? "BTCUSD" : "NAS100";
+  }
+  return id;
+}
 
 export const useDesk = create<DeskState>((set, get) => ({
-  symbol: vault.symbol ?? "NAS100",
+  symbol: bootSymbol(),
   tf: vault.tf ?? 5,
   risk: vault.risk ?? "1",
   candles: {},
@@ -125,8 +191,13 @@ export const useDesk = create<DeskState>((set, get) => ({
   live: false,
   scanning: false,
   feedLabel: "FEED",
-  positions: vault.positions ?? [],
-  closed: vault.closed ?? [],
+  positions: challengeOn ? challengePositions : deskPositions,
+  closed: challengeOn ? challengeClosed : deskClosed,
+  deskPositions,
+  deskClosed,
+  challengePositions,
+  challengeClosed,
+  challenge: challengeOn,
   armed: vault.armed ?? false,
   sendTl: vault.sendTl ?? false,
   autoTp: vault.autoTp ?? "tp6",
@@ -147,6 +218,47 @@ export const useDesk = create<DeskState>((set, get) => ({
   toggleHa: () => set({ ha: !get().ha }),
   toggleFlattenAtClose: () => set({ flattenAtClose: !get().flattenAtClose }),
   toggleSkin: () => set({ skin: get().skin === "gamer" ? "command" : "gamer" }),
+  toggleChallenge: () => {
+    const s = get();
+    if (s.challenge) {
+      set({
+        challenge: false,
+        challengePositions: s.positions,
+        challengeClosed: s.closed,
+        positions: s.deskPositions,
+        closed: s.deskClosed,
+      });
+      return;
+    }
+    let symbol = s.symbol;
+    const eq = bookEquity({
+      challenge: true,
+      positions: s.challengePositions,
+      closed: s.challengeClosed,
+      candles: s.candles,
+    });
+    if (!marketAllowed(symbol, true, eq)) symbol = "BTCUSD";
+    set({
+      challenge: true,
+      deskPositions: s.positions,
+      deskClosed: s.closed,
+      positions: s.challengePositions,
+      closed: s.challengeClosed,
+      symbol,
+    });
+  },
+  resetChallenge: () => {
+    const s = get();
+    if (!s.challenge) return;
+    set({
+      positions: [],
+      closed: [],
+      challengePositions: [],
+      challengeClosed: [],
+      lastFlatDate: "",
+      symbol: "BTCUSD",
+    });
+  },
   setAutoTp: (v) => set({ autoTp: v }),
   scanAll: async () => {
     set({ scanning: true, feedLabel: "SCANNING" });
@@ -183,7 +295,7 @@ export const useDesk = create<DeskState>((set, get) => ({
     });
   },
   tickSim: () => {
-    const { symbol, live, candles, positions, autoTp, trailOn, flattenAtClose, lastFlatDate } = get();
+    const { symbol, live, candles, positions, autoTp, trailOn, flattenAtClose, lastFlatDate, challenge } = get();
     const sess = nySession();
     if (flattenAtClose && sess.afterClose && lastFlatDate !== sess.date && positions.length) {
       get().flatten("NY CLOSE");
@@ -240,14 +352,19 @@ export const useDesk = create<DeskState>((set, get) => ({
     }
     const next = { ...candles, [symbol]: c };
     const analysis = { ...get().analysis, [symbol]: analyzeMarket(c) };
+    const nextClosed = newly.length ? [...get().closed, ...newly] : get().closed;
     set({
       candles: next,
       analysis,
       positions: still,
-      closed: newly.length ? [...get().closed, ...newly] : get().closed,
+      closed: nextClosed,
+      ...(challenge
+        ? { challengePositions: still, challengeClosed: nextClosed }
+        : { deskPositions: still, deskClosed: nextClosed }),
     });
     const a = analysis[symbol];
-    if (get().armed && a.executable && a.setup && a.setup.signal !== "WAIT") {
+    const eq = bookEquity({ challenge, positions: still, closed: nextClosed, candles: next });
+    if (get().armed && a.executable && a.setup && a.setup.signal !== "WAIT" && marketAllowed(symbol, challenge, eq)) {
       const withTrend =
         (a.setup.signal === "BUY" && a.bias === "bull") ||
         (a.setup.signal === "SELL" && a.bias === "bear");
@@ -256,7 +373,9 @@ export const useDesk = create<DeskState>((set, get) => ({
   },
   paper: (side: Signal) => {
     if (side !== "BUY" && side !== "SELL") return;
-    const { symbol, analysis, candles, risk, positions, sendTl } = get();
+    const { symbol, analysis, candles, risk, positions, sendTl, challenge, closed } = get();
+    const eq = bookEquity({ challenge, positions, closed, candles });
+    if (!marketAllowed(symbol, challenge, eq)) return;
     const a = analysis[symbol];
     if (!a?.executable) return;
     const meta = marketById(symbol);
@@ -266,12 +385,10 @@ export const useDesk = create<DeskState>((set, get) => ({
     const entry = s && s.signal === side ? s.entry : last.c;
     const sl = s && s.signal === side ? s.sl : side === "BUY" ? entry * 0.995 : entry * 1.005;
     const tps = s?.tps?.length === 6 ? s.tps : rTargets(entry, sl, side);
-    const riskAmt = START_EQ * (Number(risk) / 100);
+    const riskAmt = startEq(challenge) * (Number(risk) / 100);
     const tl = useTl.getState();
     const session = tl.session;
-    const copies = session
-      ? session.accounts.filter((acc) => session.copyIds.includes(acc.accNum))
-      : [];
+    const copies = session ? session.accounts.filter((acc) => session.copyIds.includes(acc.accNum)) : [];
     const targets =
       copies.length > 0
         ? copies.map((acc) => ({ key: acc.accNum, label: acc.id }))
@@ -298,16 +415,21 @@ export const useDesk = create<DeskState>((set, get) => ({
       });
     }
     if (!fresh.length) return;
-    set({ positions: [...positions, ...fresh] });
+    const nextPos = [...positions, ...fresh];
+    set({
+      positions: nextPos,
+      ...(challenge ? { challengePositions: nextPos } : { deskPositions: nextPos }),
+    });
     if (sendTl && session && copies.length) {
       const qty = Math.max(0.01, Math.round(Number(risk) * 100) / 10000);
       void Promise.all(
         copies.map(async (acc) => {
           try {
-            await tlPlace({
+            const receipt = await tlPlace({
               data: {
                 env: session.env,
                 token: session.accessToken,
+                refreshToken: session.refreshToken,
                 accountId: acc.id,
                 accNum: acc.accNum,
                 symbol: meta.id,
@@ -317,7 +439,12 @@ export const useDesk = create<DeskState>((set, get) => ({
                 qty,
               },
             });
-            return { acc: acc.id, ok: true, msg: "copied" };
+            useTl.getState().updateTokens(receipt.accessToken, receipt.refreshToken);
+            return {
+              acc: acc.id,
+              ok: true,
+              msg: receipt.orderId ? `accepted · ${receipt.orderId}` : "accepted",
+            };
           } catch (e) {
             return { acc: acc.id, ok: false, msg: e instanceof Error ? e.message : "copy failed" };
           }
@@ -326,22 +453,34 @@ export const useDesk = create<DeskState>((set, get) => ({
     }
   },
   flatten: (reason = "FLATTEN") => {
-    const { positions, candles, closed } = get();
+    const { positions, candles, closed, challenge } = get();
     const done = positions.map((p) => {
       const px = candles[p.sym]?.at(-1)?.c ?? p.entry;
       return closeTrade(p, px, reason);
     });
-    set({ positions: [], closed: [...closed, ...done] });
+    const nextClosed = [...closed, ...done];
+    set({
+      positions: [],
+      closed: nextClosed,
+      ...(challenge
+        ? { challengePositions: [], challengeClosed: nextClosed }
+        : { deskPositions: [], deskClosed: nextClosed }),
+    });
   },
   closePosition: (id, at) => {
-    const { positions, closed } = get();
+    const { positions, closed, challenge } = get();
     const p = positions.find((x) => x.id === id);
     if (!p) return;
     const idx = tpIndex(at);
     const px = idx != null ? p.tps[idx] : (get().candles[p.sym]?.at(-1)?.c ?? p.entry);
+    const nextPos = positions.filter((x) => x.id !== id);
+    const nextClosed = [...closed, closeTrade(p, px, at.toUpperCase())];
     set({
-      positions: positions.filter((x) => x.id !== id),
-      closed: [...closed, closeTrade(p, px, at.toUpperCase())],
+      positions: nextPos,
+      closed: nextClosed,
+      ...(challenge
+        ? { challengePositions: nextPos, challengeClosed: nextClosed }
+        : { deskPositions: nextPos, deskClosed: nextClosed }),
     });
   },
 }));
