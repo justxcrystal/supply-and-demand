@@ -1,0 +1,136 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg: #080c0e;
+  --color-fg: #c8d6d4;
+  --color-muted: #6a7c7a;
+  --color-panel: #0b1214;
+  --color-panel2: #11191c;
+  --color-line: #24383a;
+  --color-buy: #3ee8a0;
+  --color-sell: #ff5d73;
+  --color-entry: #4ecdc4;
+  --color-flatten: #c9926e;
+  --color-flatten-fg: #140e0a;
+  --color-logo-fg: #06100c;
+  --color-chart: #070a0b;
+  --color-buy-bg: #0c1c18;
+  --color-buy-line: #1a4a40;
+  --color-sell-bg: #3a171c;
+  --color-sell-line: #6a2a34;
+  --font-sans: "IBM Plex Mono", ui-monospace, monospace;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-display: "Rajdhani", "IBM Plex Mono", ui-sans-serif, sans-serif;
+  --shadow-border: 0 0 0 1px #466e6e47, 0 10px 28px #00000073;
+  --shadow-glow: 0 0 0 1px #4ecdc466, 0 0 18px #4ecdc433;
+}
+
+html[data-skin="gamer"] {
+  --color-bg: #100c1c;
+  --color-fg: #e6dcf6;
+  --color-muted: #8a7aa8;
+  --color-panel: #14101e;
+  --color-panel2: #1a1628;
+  --color-line: #3a3060;
+  --color-buy: #7ee0c8;
+  --color-sell: #e889c0;
+  --color-entry: #c4b0f0;
+  --color-flatten: #c4a8e0;
+  --color-flatten-fg: #120e1c;
+  --color-logo-fg: #120e1c;
+  --color-chart: #0c0a16;
+  --color-buy-bg: #181428;
+  --color-buy-line: #5a4880;
+  --shadow-border: 0 0 0 1px #a08cdc47, 0 10px 28px #00000073;
+  --shadow-glow: 0 0 0 1px #c4b0f073, 0 0 18px #c4b0f038;
+  --font-display: "Pixelify Sans", "Rajdhani", sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    min-height: 100%;
+    background: var(--color-bg);
+    color: var(--color-fg);
+  }
+  body {
+    background-color: var(--color-bg);
+    background-image: linear-gradient(#080c0e8c, #080c0eb8), url(/command/tokyo-rain.jpg);
+    background-position: 50%;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-attachment: fixed;
+  }
+  html[data-skin="gamer"] body {
+    background-color: #100c1c;
+    background-image: linear-gradient(#100c208c, #100c20b8), url(/gamer/night-rain.jpg);
+    background-position: 50%;
+    background-repeat: no-repeat;
+    background-size: cover;
+    background-attachment: fixed;
+  }
+  html[data-skin="gamer"] h1 {
+    font-weight: 900;
+  }
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+  button:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+}
+
+@layer components {
+  .hud-panel {
+    position: relative;
+    background: color-mix(in srgb, var(--color-panel) 92%, transparent);
+    box-shadow: var(--shadow-border);
+    backdrop-filter: blur(10px);
+    clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+  }
+  .hud-panel::before,
+  .hud-panel::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-color: var(--color-entry);
+    border-style: solid;
+    opacity: 0.7;
+  }
+  .hud-panel::before {
+    top: 0;
+    left: 0;
+    border-width: 1px 0 0 1px;
+  }
+  .hud-panel::after {
+    right: 0;
+    bottom: 0;
+    border-width: 0 1px 1px 0;
+  }
+  .hud-chip {
+    clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+  }
+  .hud-pulse {
+    animation: hud-pulse 2.4s ease-in-out infinite;
+  }
+}
+
+@keyframes hud-pulse {
+  0%,
+  100% {
+    box-shadow: var(--shadow-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-entry) 80%, transparent), 0 0 28px color-mix(in srgb, var(--color-entry) 45%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-pulse {
+    animation: none;
+  }
+}
