@@ -169,7 +169,7 @@ type DeskState = {
   toggleChallenge: () => void;
   resetChallenge: () => void;
   setAutoTp: (v: TpKey) => void;
-  scanAll: () => Promise<void>;
+  scanAll: (navigateToSetup?: boolean) => Promise<void>;
   refreshLead: () => Promise<void>;
   tickSim: () => void;
   paper: (side: "BUY" | "SELL") => void;
@@ -222,7 +222,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   setSymbol: (id) => set({ symbol: id }),
   setTf: (tf) => {
     set({ tf });
-    void get().scanAll();
+    void get().scanAll(false);
   },
   setRisk: (r) => set({ risk: r }),
   setBook: (book) => {
@@ -286,7 +286,7 @@ export const useDesk = create<DeskState>((set, get) => ({
     });
   },
   setAutoTp: (v) => set({ autoTp: v }),
-  scanAll: async () => {
+  scanAll: async (navigateToSetup = true) => {
     const tf = get().tf;
     const leadId = get().symbol;
     const had = (get().candles[leadId]?.length ?? 0) > 8;
@@ -336,13 +336,30 @@ export const useDesk = create<DeskState>((set, get) => ({
         backtests[r.id] = r.backtest;
         if (r.live) anyLive = true;
       }
+      const equity = bookEquity({ challenge: get().challenge, positions: get().positions, closed: get().closed, candles });
+      const eligible = UNIVERSE.filter((m) => marketAllowed(m.id, get().challenge, equity)).map((market) => ({
+        market,
+        analysis: analysis[market.id],
+        bars: candles[market.id],
+      }));
+      const readiness = ({ analysis: a, bars }: (typeof eligible)[number]) => {
+        if (!a?.setup || !bars?.length) return -1000;
+        const last = bars.at(-1)!;
+        const zone = a.amd?.zone ?? a.setup;
+        const atr = a.atr || a.setup.atr || Math.abs(zone.top - zone.bot) || 1;
+        const distance = last.c > zone.top ? (last.c - zone.top) / atr : last.c < zone.bot ? (zone.bot - last.c) / atr : 0;
+        const withTrend = (a.setup.signal === "BUY" && a.bias === "bull") || (a.setup.signal === "SELL" && a.bias === "bear");
+        return (a.executable ? 10000 : 0) + (a.amd?.phase === "distribution" ? 3000 : a.amd?.phase === "manipulation" ? 1200 : 100) + (a.amd?.mss ? 900 : 0) + (withTrend ? 700 : 0) + Math.min(99, a.setup.score) * 4 - distance * 250 - (zone.touches >= 3 ? 1500 : 0);
+      };
+      const best = eligible.sort((a, b) => readiness(b) - readiness(a))[0];
       set({
         candles,
         analysis,
         backtests,
+        ...(navigateToSetup && best ? { symbol: best.market.id, book: best.market.book } : {}),
         scanning: false,
         live: anyLive,
-        feedLabel: anyLive ? "LIVE FEED" : "SIM FEED",
+        feedLabel: navigateToSetup && best ? (best.analysis.executable ? `READY · ${best.market.id}` : `WATCH · ${best.market.id}`) : anyLive ? "LIVE FEED" : "SIM FEED",
       });
     } catch {
       set({ scanning: false, feedLabel: get().live ? "LIVE FEED" : "SIM FEED" });

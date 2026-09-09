@@ -354,6 +354,21 @@ export function CatchCard({ closed }: { closed: ClosedTrade[] }) {
     setNote("Caption copied. X compose is open — attach the catch card.");
   }
 
+  async function openAi(destination: "chatgpt" | "grok") {
+    const tab = window.open("about:blank", "_blank");
+    const text = `${caption(catchOf)}\n\nHelp me polish and post this trading recap.`;
+    const url = src || (await mount());
+    await navigator.clipboard?.writeText(text).catch(() => undefined);
+    const destinationUrl = destination === "chatgpt" ? "https://chatgpt.com/" : "https://grok.com/";
+    if (tab) {
+      tab.opener = null;
+      tab.location.href = destinationUrl;
+    } else {
+      window.open(destinationUrl, "_blank", "noopener,noreferrer");
+    }
+    setNote(`${destination === "chatgpt" ? "ChatGPT" : "Grok"} opened for sign-in. Caption copied${url ? " — attach the card shown below" : ""}.`);
+  }
+
   return (
     <div className="mt-3 space-y-2">
       <div className="flex flex-wrap gap-2">
@@ -363,7 +378,13 @@ export function CatchCard({ closed }: { closed: ClosedTrade[] }) {
           onClick={() => void mount()}
           className="hud-chip h-10 bg-entry px-4 font-mono text-[11px] font-semibold uppercase tracking-wider text-logo-fg"
         >
-          {busy ? "Mounting…" : "Post the day"}
+          {busy ? "Mounting…" : "Create post of the day"}
+        </button>
+        <button type="button" disabled={empty || busy} onClick={() => void openAi("chatgpt")} className="hud-chip h-10 border border-line px-4 font-mono text-[11px] uppercase tracking-wider text-entry">
+          Open ChatGPT
+        </button>
+        <button type="button" disabled={empty || busy} onClick={() => void openAi("grok")} className="hud-chip h-10 border border-line px-4 font-mono text-[11px] uppercase tracking-wider text-entry">
+          Open Grok
         </button>
         {src ? (
           <>

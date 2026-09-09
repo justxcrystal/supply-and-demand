@@ -133,7 +133,7 @@ export function Desk() {
   }, [skin]);
 
   useEffect(() => {
-    void scanAll();
+    void scanAll(false);
   }, [scanAll, tf]);
 
   useEffect(() => {
@@ -504,10 +504,10 @@ export function Desk() {
               </button>
               <button
                 type="button"
-                onClick={() => void scanAll()}
+                onClick={() => void scanAll(true)}
                 className="hud-chip h-10 border border-line px-4 font-mono text-xs uppercase tracking-wider text-muted"
               >
-                Scan
+                {scanning ? "Scanning…" : "Find setup"}
               </button>
             </div>
           </section>

@@ -82,6 +82,40 @@ export function drawDeskChart(
     ctx.stroke();
   }
 
+  const amd = args.analysis?.amd;
+  if (amd?.acc) {
+    const plotRight = w - padR;
+    const step = (plotRight - padL) / Math.max(1, bars.length - 1);
+    const band = (a: number, b: number, label: string, color: string) => {
+      const left = Math.max(padL, x(Math.max(0, a)) - step / 2);
+      const right = Math.min(plotRight, x(Math.min(lastI, Math.max(a, b))) + step / 2);
+      if (right <= left) return;
+      ctx.fillStyle = color;
+      ctx.fillRect(left, padT, right - left, h - padT - padB);
+      ctx.fillStyle = "rgba(235,245,243,.82)";
+      ctx.font = "bold 9px IBM Plex Mono, ui-monospace, monospace";
+      ctx.fillText(label, left + 4, padT + 12);
+    };
+    const manipI = amd.manip?.i;
+    const distI = amd.dist?.i;
+    let retestI = -1;
+    if (distI != null && amd.zone) {
+      for (let i = distI + 1; i <= lastI; i++) {
+        if (bars[i].l <= amd.zone.top && bars[i].h >= amd.zone.bot) {
+          retestI = i;
+          break;
+        }
+      }
+    }
+    band(amd.acc.a, amd.acc.b, "ACCUMULATION", "rgba(78,205,196,.10)");
+    if (manipI != null) band(manipI, Math.min(lastI, manipI + 1), "MANIPULATION / SWEEP", "rgba(255,93,115,.13)");
+    if (distI != null) band(distI, retestI >= 0 ? Math.max(distI, retestI - 1) : lastI, "DISTRIBUTION / IMPULSE", "rgba(255,190,92,.11)");
+    if (retestI >= 0) {
+      band(retestI, Math.min(lastI, retestI + 1), "CORRECTION / RETEST", "rgba(139,124,255,.14)");
+      if (retestI + 1 <= lastI) band(retestI + 1, lastI, "CONTINUATION", "rgba(62,232,160,.10)");
+    }
+  }
+
   const zone = args.analysis?.amd?.zone ?? args.analysis?.zones?.[0];
   if (zone) {
     const zx = x(Math.max(0, zone.a));
@@ -93,7 +127,6 @@ export function drawDeskChart(
     ctx.strokeRect(zx, y(zone.top), zw, y(zone.bot) - y(zone.top));
   }
 
-  const amd = args.analysis?.amd;
   if (amd?.manip) {
     ctx.strokeStyle = "rgba(255,107,122,.45)";
     ctx.setLineDash([3, 4]);
