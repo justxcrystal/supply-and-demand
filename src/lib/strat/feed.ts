@@ -116,6 +116,7 @@ export async function loadYahoo(meta: Market, tf: number): Promise<Candle[]> {
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
     },
+    signal: AbortSignal.timeout(8000),
   });
   if (!res.ok) throw new Error("yahoo " + res.status);
   const j = (await res.json()) as {

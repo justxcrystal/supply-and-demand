@@ -60,5 +60,13 @@ export const imagineCatch = createServerFn({ method: "POST" })
     const body = (await res.json()) as { data?: { url?: string }[] };
     const src = body.data?.[0]?.url;
     if (!src) return { ok: false, error: "No image" };
-    return { ok: true, src };
+    try {
+      const img = await fetch(src);
+      if (!img.ok) return { ok: true, src };
+      const buf = Buffer.from(await img.arrayBuffer());
+      const mime = img.headers.get("content-type") || "image/jpeg";
+      return { ok: true, src: `data:${mime};base64,${buf.toString("base64")}` };
+    } catch {
+      return { ok: true, src };
+    }
   });

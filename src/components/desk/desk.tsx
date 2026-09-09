@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { CatchCard } from "@/components/desk/catch-card";
 import { PriceChart, toHeikin } from "@/components/desk/chart";
-import { GrokPanel } from "@/components/desk/grok-panel";
+import { ManualTicket } from "@/components/desk/manual-ticket";
 import { TradeLockerPanel, TradeLockerRuntime } from "@/components/desk/tl-login";
 import { WebullPanel, WebullRuntime } from "@/components/desk/wb-login";
 import {
@@ -68,6 +68,14 @@ function sessionClocks() {
   ];
 }
 
+function emptySessions() {
+  return [
+    { id: "asia", label: "ASIA", clock: "--:--", zone: "JST", window: "09:00–18:00", open: false },
+    { id: "london", label: "LONDON", clock: "--:--", zone: "LT", window: "08:00–16:30", open: false },
+    { id: "ny", label: "NEW YORK", clock: "--:--", zone: "ET", window: "08:00–17:00", open: false },
+  ];
+}
+
 export function Desk() {
   const symbol = useDesk((s) => s.symbol);
   const tf = useDesk((s) => s.tf);
@@ -93,6 +101,7 @@ export function Desk() {
   const setTf = useDesk((s) => s.setTf);
   const setRisk = useDesk((s) => s.setRisk);
   const scanAll = useDesk((s) => s.scanAll);
+  const refreshLead = useDesk((s) => s.refreshLead);
   const tickSim = useDesk((s) => s.tickSim);
   const paper = useDesk((s) => s.paper);
   const flatten = useDesk((s) => s.flatten);
@@ -116,7 +125,7 @@ export function Desk() {
   const openTradesWb = useWb((s) => s.openTrades);
   const [clock, setClock] = useState("");
   const [sessionLeft, setSessionLeft] = useState("");
-  const [sessions, setSessions] = useState(sessionClocks);
+  const [sessions, setSessions] = useState(emptySessions);
 
   useEffect(() => {
     document.documentElement.dataset.skin = skin === "gamer" ? "gamer" : "";
@@ -125,7 +134,13 @@ export function Desk() {
 
   useEffect(() => {
     void scanAll();
-  }, [scanAll]);
+  }, [scanAll, tf]);
+
+  useEffect(() => {
+    void refreshLead();
+    const id = setInterval(() => void refreshLead(), 12000);
+    return () => clearInterval(id);
+  }, [refreshLead, symbol, tf]);
 
   useEffect(() => {
     const a = setInterval(tickSim, 2500);
@@ -267,6 +282,19 @@ export function Desk() {
             className="hud-chip h-10 bg-flatten px-4 font-mono text-xs font-semibold uppercase tracking-wider text-flatten-fg"
           >
             Flatten paper
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (book === "futures") {
+                if (!wb) useWb.getState().setOpen(true);
+                else void useWb.getState().flattenBroker();
+              } else if (!tl) useTl.getState().setOpen(true);
+              else void useTl.getState().flattenBroker();
+            }}
+            className="hud-chip h-10 bg-flatten px-4 font-mono text-xs font-semibold uppercase tracking-wider text-flatten-fg"
+          >
+            Flatten {book === "futures" ? "Webull" : "TradeLocker"}
           </button>
         </div>
       </header>
@@ -623,6 +651,28 @@ export function Desk() {
               on={flattenAtClose}
               onChange={toggleFlattenAtClose}
             />
+            <p className="mt-4 font-mono text-[10px] uppercase tracking-widest text-muted">What's wrong</p>
+            <div className="mt-2 space-y-2">
+              {(an?.issues ?? []).length === 0 ? (
+                <p className="font-mono text-xs text-muted">No flags on {meta.id}.</p>
+              ) : (
+                (an?.issues ?? []).map((iss) => (
+                  <div key={iss.title} className="rounded-2xl bg-panel2 p-3">
+                    <p
+                      className={cn(
+                        "font-mono text-xs font-semibold",
+                        iss.level === "block" && "text-sell",
+                        iss.level === "warn" && "text-flatten",
+                        iss.level === "info" && "text-entry",
+                      )}
+                    >
+                      {iss.level === "block" ? "BLOCK" : iss.level === "warn" ? "WATCH" : "OK"} · {iss.title}
+                    </p>
+                    <p className="mt-1 font-mono text-[11px] leading-snug text-muted">{iss.detail}</p>
+                  </div>
+                ))
+              )}
+            </div>
           </section>
         </div>
 
@@ -698,32 +748,20 @@ export function Desk() {
                     {row.ok ? "COPIED" : "FAIL"} · {row.acc} · {row.msg}
                   </p>
                 ))}
+                {book === "forex" && lastCopy.some((r) => !r.ok) ? (
+                  <button
+                    type="button"
+                    onClick={() => useTl.getState().setOpen(true)}
+                    className="mt-2 font-mono text-[10px] uppercase tracking-wider text-entry"
+                  >
+                    Reconnect TradeLocker
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </section>
 
-          <GrokPanel symbol={symbol} tf={tf} last={last} analysis={an} />
-
-          <section className="hud-panel p-4">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-muted">What's wrong</p>
-            <div className="mt-2 space-y-2">
-              {(an?.issues ?? []).map((iss) => (
-                <div key={iss.title} className="rounded-2xl bg-panel2 p-3">
-                  <p
-                    className={cn(
-                      "font-mono text-xs font-semibold",
-                      iss.level === "block" && "text-sell",
-                      iss.level === "warn" && "text-flatten",
-                      iss.level === "info" && "text-entry",
-                    )}
-                  >
-                    {iss.level === "block" ? "BLOCK" : iss.level === "warn" ? "WATCH" : "OK"} · {iss.title}
-                  </p>
-                  <p className="mt-1 font-mono text-[11px] leading-snug text-muted">{iss.detail}</p>
-                </div>
-              ))}
-            </div>
-          </section>
+          <ManualTicket last={last} analysis={an} paperEq={paperEq} />
 
           <section className="hud-panel p-4">
             <p className="font-mono text-[10px] uppercase tracking-widest text-muted">Sample backtest</p>

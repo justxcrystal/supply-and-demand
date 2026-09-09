@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { normalizeWbEnv, wbEquity, wbLogin, wbOpenTrades, wbRefresh, type WbAccount, type WbEnv, type WbOpenTrade } from "./webull";
+import { normalizeWbEnv, wbEquity, wbFlatten, wbLogin, wbOpenTrades, wbRefresh, type WbAccount, type WbEnv, type WbOpenTrade } from "./webull";
 
 const KEY = "sd.webull.session";
 
@@ -29,13 +29,20 @@ type WbState = {
   refreshTrades: () => Promise<void>;
   pickAccount: (id: string) => void;
   setLastCopy: (rows: WbCopyResult[]) => void;
+  flattenBroker: () => Promise<void>;
   logout: () => void;
 };
 
 function persist(s: Session | null) {
-  if (typeof sessionStorage === "undefined") return;
-  if (!s) sessionStorage.removeItem(KEY);
-  else sessionStorage.setItem(KEY, JSON.stringify(s));
+  if (typeof localStorage === "undefined") return;
+  if (!s) {
+    localStorage.removeItem(KEY);
+    try {
+      sessionStorage.removeItem(KEY);
+    } catch {
+      /* ignore */
+    }
+  } else localStorage.setItem(KEY, JSON.stringify(s));
 }
 
 let moneyLock = false;
@@ -51,7 +58,7 @@ export const useWb = create<WbState>((set, get) => ({
   setOpen: (v) => set({ open: v, error: "" }),
   hydrate: () => {
     try {
-      const raw = sessionStorage.getItem(KEY);
+      const raw = localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY);
       if (!raw) return;
       const s = JSON.parse(raw) as Session;
       if (s?.token && s.appKey && s.appSecret) {
@@ -137,6 +144,26 @@ export const useWb = create<WbState>((set, get) => ({
     set({ session: next });
   },
   setLastCopy: (rows) => set({ lastCopy: rows }),
+  flattenBroker: async () => {
+    const session = get().session;
+    if (!session) return;
+    try {
+      const rows = await wbFlatten({
+        data: {
+          env: session.env,
+          appKey: session.appKey,
+          appSecret: session.appSecret,
+          token: session.token,
+          accounts: session.accounts,
+        },
+      });
+      set({ lastCopy: rows });
+    } catch (e) {
+      set({ lastCopy: [{ acc: "Webull", ok: false, msg: e instanceof Error ? e.message : "flatten failed" }] });
+    }
+    void get().refreshTrades();
+    void get().refresh();
+  },
   logout: () => {
     persist(null);
     set({ session: null, error: "", lastCopy: [], openTrades: [] });

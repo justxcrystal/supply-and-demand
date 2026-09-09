@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { accountEquity, leadAccount, normalizeEnv, tlLogin, tlOpenTrades, tlRefreshMoney, type TlAccount, type TlEnv, type TlOpenTrade } from "./tradelocker";
+import { accountEquity, isTlAuthError, jwtLeftMs, leadAccount, normalizeEnv, tlFlatten, tlLogin, tlOpenTrades, tlRefreshJwt, tlRefreshMoney, type TlAccount, type TlEnv, type TlOpenTrade } from "./tradelocker";
 
 const KEY = "sd.tradelocker.session";
 
@@ -27,24 +27,32 @@ type TlState = {
   setOpen: (v: boolean) => void;
   hydrate: () => void;
   login: (p: { email: string; password: string; server: string; env: TlEnv }) => Promise<void>;
+  ensureToken: (force?: boolean) => Promise<Session | null>;
   refreshMoney: () => Promise<void>;
   refreshTrades: () => Promise<void>;
   pickAccount: (accNum: string) => void;
   toggleCopy: (accNum: string) => void;
   setCopyAll: (on: boolean) => void;
   setLastCopy: (rows: CopyResult[]) => void;
-  updateTokens: (accessToken: string, refreshToken: string) => void;
+  flattenBroker: () => Promise<void>;
   logout: () => void;
 };
 
 function persist(s: Session | null) {
-  if (typeof sessionStorage === "undefined") return;
-  if (!s) sessionStorage.removeItem(KEY);
-  else sessionStorage.setItem(KEY, JSON.stringify(s));
+  if (typeof localStorage === "undefined") return;
+  if (!s) {
+    localStorage.removeItem(KEY);
+    try {
+      sessionStorage.removeItem(KEY);
+    } catch {
+      /* ignore */
+    }
+  } else localStorage.setItem(KEY, JSON.stringify(s));
 }
 
 let moneyLock = false;
 let tradeLock = false;
+let tokenLock: Promise<Session | null> | null = null;
 
 export const useTl = create<TlState>((set, get) => ({
   open: false,
@@ -56,7 +64,7 @@ export const useTl = create<TlState>((set, get) => ({
   setOpen: (v) => set({ open: v, error: "" }),
   hydrate: () => {
     try {
-      const raw = sessionStorage.getItem(KEY);
+      const raw = localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY);
       if (!raw) return;
       const s = JSON.parse(raw) as Session;
       if (s?.accessToken) {
@@ -81,7 +89,7 @@ export const useTl = create<TlState>((set, get) => ({
         copyIds,
       };
       persist(session);
-      set({ session, busy: false, open: false });
+      set({ session, busy: false, open: false, error: "", lastCopy: [] });
       void get().refreshTrades();
     } catch (e) {
       set({
@@ -90,8 +98,44 @@ export const useTl = create<TlState>((set, get) => ({
       });
     }
   },
-  refreshMoney: async () => {
+  ensureToken: async (force = false) => {
     const session = get().session;
+    if (!session) return null;
+    if (!force && jwtLeftMs(session.accessToken, session.expireDate) > 10 * 60 * 1000) return session;
+    if (tokenLock) return tokenLock;
+    tokenLock = (async () => {
+      try {
+        const r = await tlRefreshJwt({
+          data: {
+            env: session.env,
+            accessToken: session.accessToken,
+            refreshToken: session.refreshToken,
+          },
+        });
+        const cur = get().session;
+        if (!cur) return null;
+        const next = { ...cur, ...r };
+        persist(next);
+        set({ session: next, error: "", lastCopy: [] });
+        return next;
+      } catch (e) {
+        persist(null);
+        set({
+          session: null,
+          openTrades: [],
+          lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — log in again" }],
+          open: true,
+          error: e instanceof Error ? e.message : "TradeLocker session expired. Log in again.",
+        });
+        return null;
+      } finally {
+        tokenLock = null;
+      }
+    })();
+    return tokenLock;
+  },
+  refreshMoney: async () => {
+    const session = await get().ensureToken();
     if (!session || moneyLock) return;
     moneyLock = true;
     try {
@@ -103,18 +147,27 @@ export const useTl = create<TlState>((set, get) => ({
         },
       });
       const cur = get().session;
-      if (!cur || cur.accessToken !== session.accessToken) return;
+      if (!cur) return;
       const next = { ...cur, accounts };
       persist(next);
       set({ session: next });
-    } catch {
-      /* keep last known balances */
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      if (isTlAuthError(msg)) {
+        persist(null);
+        set({
+          session: null,
+          open: true,
+          error: "TradeLocker session expired. Log in again.",
+          lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — log in again" }],
+        });
+      }
     } finally {
       moneyLock = false;
     }
   },
   refreshTrades: async () => {
-    const session = get().session;
+    const session = await get().ensureToken();
     if (!session || tradeLock) return;
     tradeLock = true;
     try {
@@ -125,11 +178,11 @@ export const useTl = create<TlState>((set, get) => ({
           accounts: session.accounts,
         },
       });
-      const cur = get().session;
-      if (!cur || cur.accessToken !== session.accessToken) return;
+      if (!get().session) return;
       set({ openTrades });
-    } catch {
-      /* keep last known trades */
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "";
+      if (isTlAuthError(msg)) void get().ensureToken();
     } finally {
       tradeLock = false;
     }
@@ -162,12 +215,24 @@ export const useTl = create<TlState>((set, get) => ({
     set({ session: next });
   },
   setLastCopy: (rows) => set({ lastCopy: rows }),
-  updateTokens: (accessToken, refreshToken) => {
-    const session = get().session;
-    if (!session || !accessToken) return;
-    const next = { ...session, accessToken, refreshToken: refreshToken || session.refreshToken };
-    persist(next);
-    set({ session: next });
+  flattenBroker: async () => {
+    const session = await get().ensureToken();
+    if (!session) {
+      set({ open: true, error: get().error || "Log into TradeLocker to flatten." });
+      return;
+    }
+    const copies = session.accounts.filter((a) => session.copyIds.includes(a.accNum));
+    const accounts = copies.length ? copies : session.accounts.slice(0, 1);
+    try {
+      const rows = await tlFlatten({
+        data: { env: session.env, token: session.accessToken, accounts },
+      });
+      set({ lastCopy: rows });
+    } catch (e) {
+      set({ lastCopy: [{ acc: "TradeLocker", ok: false, msg: e instanceof Error ? e.message : "flatten failed" }] });
+    }
+    void get().refreshTrades();
+    void get().refreshMoney();
   },
   logout: () => {
     persist(null);

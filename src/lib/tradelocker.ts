@@ -155,6 +155,36 @@ function parseErr(status: number, text: string): string {
   }
 }
 
+export function isTlAuthError(msg: string) {
+  return /jwt|token expired|unauthorized|401|invalid token|access token/i.test(msg);
+}
+
+export function tlFailMsg(msg: string) {
+  if (isTlAuthError(msg)) return "session expired — tap FOREX and log in";
+  return msg;
+}
+
+export function jwtLeftMs(token: string, expireDate?: string) {
+  if (expireDate) {
+    const t = Date.parse(expireDate);
+    if (Number.isFinite(t)) return t - Date.now();
+  }
+  try {
+    const part = token.split(".")[1];
+    if (!part) return 0;
+    const b64 = part.replace(/-/g, "+").replace(/_/g, "/");
+    const json =
+      typeof atob === "function"
+        ? atob(b64)
+        : Buffer.from(b64, "base64").toString("utf8");
+    const payload = JSON.parse(json) as { exp?: number };
+    if (payload.exp) return payload.exp * 1000 - Date.now();
+  } catch {
+    /* ignore */
+  }
+  return 0;
+}
+
 function headers(token: string, accNum?: string) {
   const h: Record<string, string> = {
     accept: "application/json",
@@ -500,6 +530,32 @@ export const tlLogin = createServerFn({ method: "POST" })
     };
   });
 
+export const tlRefreshJwt = createServerFn({ method: "POST" })
+  .validator((d: unknown) => {
+    const o = d as { env: TlEnv; accessToken: string; refreshToken: string };
+    if (!o?.refreshToken) throw new Error("Missing refresh token");
+    return {
+      env: normalizeEnv(o.env),
+      accessToken: String(o.accessToken ?? ""),
+      refreshToken: o.refreshToken,
+    };
+  })
+  .handler(async ({ data }) => {
+    const res = await fetch(`${BASE[data.env]}/auth/jwt/refresh`, {
+      method: "POST",
+      headers: { accept: "application/json", "content-type": "application/json" },
+      body: JSON.stringify({ refreshToken: data.refreshToken }),
+    });
+    const text = await res.text();
+    if (!res.ok) throw new Error(parseErr(res.status, text));
+    const raw = unwrap(JSON.parse(text));
+    const accessToken = String(raw.accessToken ?? "");
+    const refreshToken = String(raw.refreshToken ?? data.refreshToken);
+    const expireDate = String(raw.expireDate ?? "");
+    if (!accessToken) throw new Error("No access token from refresh");
+    return { accessToken, refreshToken, expireDate };
+  });
+
 export const tlRefreshMoney = createServerFn({ method: "POST" })
   .validator((d: unknown) => {
     const o = d as { env: TlEnv; token: string; accounts: TlAccount[] };
@@ -548,7 +604,6 @@ export const tlPlace = createServerFn({ method: "POST" })
     const o = d as {
       env: TlEnv;
       token: string;
-      refreshToken?: string;
       accountId: string;
       accNum: string;
       symbol: string;
@@ -558,56 +613,30 @@ export const tlPlace = createServerFn({ method: "POST" })
       qty: number;
     };
     if (!o?.token || !o.accountId || !o.accNum || !o.symbol) throw new Error("Missing TradeLocker order fields");
-    if (o.side !== "BUY" && o.side !== "SELL") throw new Error("Invalid TradeLocker order side");
-    if (![o.sl, o.tp, o.qty].every((v) => Number.isFinite(v) && v > 0)) {
-      throw new Error("TradeLocker quantity, stop loss and take profit must be positive numbers");
-    }
-    return { ...o, env: normalizeEnv(o.env) };
+    return o;
   })
   .handler(async ({ data }) => {
     const base = BASE[data.env];
-    let accessToken = data.token;
-    let refreshToken = data.refreshToken ?? "";
-    const makeHeaders = () => ({
+    const headers = {
       accept: "application/json",
       "content-type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${data.token}`,
       accNum: data.accNum,
-    });
-    const refresh = async () => {
-      if (!refreshToken) return false;
-      const res = await fetch(`${base}/auth/jwt/refresh`, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json" },
-        body: JSON.stringify({ refreshToken }),
-      });
-      if (!res.ok) return false;
-      const next = unwrap(JSON.parse(await res.text()));
-      const nextAccess = String(next.accessToken ?? "");
-      if (!nextAccess) return false;
-      accessToken = nextAccess;
-      refreshToken = String(next.refreshToken ?? refreshToken);
-      return true;
     };
-    const authedFetch = async (url: string, init: RequestInit = {}) => {
-      let res = await fetch(url, { ...init, headers: makeHeaders() });
-      if (res.status === 401 && (await refresh())) {
-        res = await fetch(url, { ...init, headers: makeHeaders() });
-      }
-      return res;
-    };
-    const instRes = await authedFetch(`${base}/trade/accounts/${data.accountId}/instruments`);
+    const instRes = await fetch(`${base}/trade/accounts/${data.accountId}/instruments`, { headers });
     const instText = await instRes.text();
     if (!instRes.ok) throw new Error(parseErr(instRes.status, instText));
-    const instBody = unwrap(JSON.parse(instText)) as {
+    const instBody = JSON.parse(instText) as {
+      d?: {
         instruments?: Array<{
           tradableInstrumentId: number;
           name: string;
           routes?: Array<{ id: number; type: string }>;
         }>;
+      };
     };
     const want = data.symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const inst = (instBody.instruments ?? []).find((i) => {
+    const inst = (instBody.d?.instruments ?? []).find((i) => {
       const n = i.name.toUpperCase().replace(/[^A-Z0-9]/g, "");
       return n === want || n.includes(want) || want.includes(n);
     });
@@ -627,28 +656,52 @@ export const tlPlace = createServerFn({ method: "POST" })
       takeProfit: data.tp,
       takeProfitType: "absolute",
     };
-    const ord = await authedFetch(`${base}/trade/accounts/${data.accountId}/orders`, {
+    const ord = await fetch(`${base}/trade/accounts/${data.accountId}/orders`, {
       method: "POST",
+      headers,
       body: JSON.stringify(body),
     });
     const ot = await ord.text();
     if (!ord.ok) throw new Error(parseErr(ord.status, ot));
-    let receipt: Record<string, unknown> = {};
-    try {
-      receipt = unwrap(JSON.parse(ot));
-    } catch {
-      receipt = {};
-    }
-    const apiStatus = String(receipt.s ?? receipt.status ?? "").toLowerCase();
-    if (["error", "failed", "rejected"].includes(apiStatus) || receipt.error) {
-      throw new Error(String(receipt.message ?? receipt.error ?? "TradeLocker rejected the order"));
-    }
+    return { ok: true as const, accountId: data.accountId, raw: ot.slice(0, 300) };
+  });
+
+export const tlFlatten = createServerFn({ method: "POST" })
+  .validator((d: unknown) => {
+    const o = d as { env: TlEnv; token: string; accounts: TlAccount[] };
+    if (!o?.token) throw new Error("Missing token");
+    const accounts = Array.isArray(o.accounts) ? o.accounts : [];
     return {
-      ok: true as const,
-      accountId: data.accountId,
-      orderId: String(receipt.orderId ?? receipt.id ?? receipt.order_id ?? ""),
-      status: apiStatus || "accepted",
-      accessToken,
-      refreshToken,
+      env: normalizeEnv(o.env),
+      token: o.token,
+      accounts: accounts.map((a) => ({
+        id: String(a.id ?? ""),
+        name: String(a.name ?? a.id ?? ""),
+        currency: String(a.currency ?? "USD"),
+        status: String(a.status ?? ""),
+        accNum: String(a.accNum ?? ""),
+      })),
     };
+  })
+  .handler(async ({ data }) => {
+    const rows: Array<{ acc: string; ok: boolean; msg: string }> = [];
+    for (const acc of data.accounts) {
+      if (!acc.id || !acc.accNum) {
+        rows.push({ acc: acc.name || acc.id || "account", ok: false, msg: "missing id" });
+        continue;
+      }
+      try {
+        const res = await fetch(`${BASE[data.env]}/trade/accounts/${acc.id}/positions`, {
+          method: "DELETE",
+          headers: headers(data.token, acc.accNum),
+        });
+        const text = await res.text();
+        if (!res.ok && res.status !== 204) throw new Error(parseErr(res.status, text));
+        rows.push({ acc: acc.name || acc.id, ok: true, msg: "flattened" });
+      } catch (e) {
+        rows.push({ acc: acc.name || acc.id, ok: false, msg: e instanceof Error ? e.message : "flatten failed" });
+      }
+    }
+    if (!rows.length) rows.push({ acc: "TradeLocker", ok: false, msg: "no accounts" });
+    return rows;
   });

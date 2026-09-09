@@ -342,6 +342,45 @@ export const wbOpenTrades = createServerFn({ method: "POST" })
   })
   .handler(async ({ data }) => listTrades(data.env, data.appKey, data.appSecret, data.token, data.accounts));
 
+async function placeFutures(opts: {
+  env: WbEnv;
+  appKey: string;
+  appSecret: string;
+  token: string;
+  accountId: string;
+  symbol: string;
+  side: "BUY" | "SELL";
+  qty: number;
+}) {
+  const body = {
+    account_id: opts.accountId,
+    new_orders: [
+      {
+        combo_type: "NORMAL",
+        client_order_id: randomUUID().replaceAll("-", "").slice(0, 32),
+        symbol: opts.symbol,
+        instrument_type: "FUTURES",
+        market: "US",
+        order_type: "MARKET",
+        quantity: String(opts.qty),
+        side: opts.side,
+        time_in_force: "DAY",
+        entrust_type: "QTY",
+      },
+    ],
+  };
+  const raw = await wbFetch({
+    env: opts.env,
+    appKey: opts.appKey,
+    appSecret: opts.appSecret,
+    token: opts.token,
+    method: "POST",
+    path: "/trading/orders/place",
+    body,
+  });
+  return { ok: true as const, symbol: opts.symbol, raw: JSON.stringify(raw).slice(0, 300) };
+}
+
 export const wbPlace = createServerFn({ method: "POST" })
   .validator((d: unknown) => {
     const o = d as {
@@ -362,39 +401,61 @@ export const wbPlace = createServerFn({ method: "POST" })
       token: o.token,
       accountId: o.accountId,
       product: o.product,
-      side: o.side === "SELL" ? "SELL" : "BUY",
+      side: (o.side === "SELL" ? "SELL" : "BUY") as "BUY" | "SELL",
       qty: Math.max(1, Math.round(Number(o.qty) || 1)),
     };
   })
-  .handler(async ({ data }) => {
-    const symbol = frontMonth(data.product);
-    const body = {
-      account_id: data.accountId,
-      new_orders: [
-        {
-          combo_type: "NORMAL",
-          client_order_id: randomUUID().replaceAll("-", "").slice(0, 32),
-          symbol,
-          instrument_type: "FUTURES",
-          market: "US",
-          order_type: "MARKET",
-          quantity: String(data.qty),
-          side: data.side,
-          time_in_force: "DAY",
-          entrust_type: "QTY",
-        },
-      ],
-    };
-    const raw = await wbFetch({
+  .handler(async ({ data }) =>
+    placeFutures({
       env: data.env,
       appKey: data.appKey,
       appSecret: data.appSecret,
       token: data.token,
-      method: "POST",
-      path: "/trading/orders/place",
-      body,
-    });
-    return { ok: true as const, symbol, raw: JSON.stringify(raw).slice(0, 300) };
+      accountId: data.accountId,
+      symbol: frontMonth(data.product),
+      side: data.side,
+      qty: data.qty,
+    }),
+  );
+
+export const wbFlatten = createServerFn({ method: "POST" })
+  .validator((d: unknown) => {
+    const o = d as { env: WbEnv; appKey: string; appSecret: string; token: string; accounts: WbAccount[] };
+    if (!o?.token || !o.appKey || !o.appSecret) throw new Error("Missing Webull session");
+    return {
+      env: normalizeWbEnv(o.env),
+      appKey: o.appKey,
+      appSecret: o.appSecret,
+      token: o.token,
+      accounts: Array.isArray(o.accounts) ? o.accounts : [],
+    };
+  })
+  .handler(async ({ data }) => {
+    const trades = await listTrades(data.env, data.appKey, data.appSecret, data.token, data.accounts);
+    if (!trades.length) return [{ acc: "Webull", ok: true, msg: "already flat" }];
+    const rows: Array<{ acc: string; ok: boolean; msg: string }> = [];
+    for (const t of trades) {
+      try {
+        await placeFutures({
+          env: data.env,
+          appKey: data.appKey,
+          appSecret: data.appSecret,
+          token: data.token,
+          accountId: t.accountId,
+          symbol: t.symbol,
+          side: t.side === "BUY" ? "SELL" : "BUY",
+          qty: Math.max(1, Math.round(t.qty)),
+        });
+        rows.push({ acc: `${t.accountName} · ${t.symbol}`, ok: true, msg: "flattened" });
+      } catch (e) {
+        rows.push({
+          acc: `${t.accountName} · ${t.symbol}`,
+          ok: false,
+          msg: e instanceof Error ? e.message : "flatten failed",
+        });
+      }
+    }
+    return rows;
   });
 
 export function wbEquity(a?: WbAccount) {

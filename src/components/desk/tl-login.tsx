@@ -48,10 +48,28 @@ export function TradeLockerPanel() {
   const session = useTl((s) => s.session);
   const login = useTl((s) => s.login);
   const openTrades = useTl((s) => s.openTrades);
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(() => {
+    try {
+      return localStorage.getItem("sd.tl.email") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [password, setPassword] = useState("");
-  const [server, setServer] = useState("");
-  const [env, setEnv] = useState<TlEnv>("broker");
+  const [server, setServer] = useState(() => {
+    try {
+      return localStorage.getItem("sd.tl.server") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [env, setEnv] = useState<TlEnv>(() => {
+    try {
+      return localStorage.getItem("sd.tl.env") === "live" ? "live" : "broker";
+    } catch {
+      return "broker";
+    }
+  });
 
   if (!open) return null;
 
@@ -150,6 +168,13 @@ export function TradeLockerPanel() {
             className="space-y-3"
             onSubmit={(e) => {
               e.preventDefault();
+              try {
+                localStorage.setItem("sd.tl.email", email);
+                localStorage.setItem("sd.tl.server", server);
+                localStorage.setItem("sd.tl.env", env);
+              } catch {
+                /* ignore */
+              }
               void login({ email, password, server, env });
             }}
           >
