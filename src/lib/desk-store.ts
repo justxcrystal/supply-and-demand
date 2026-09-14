@@ -169,7 +169,8 @@ type DeskState = {
   toggleChallenge: () => void;
   resetChallenge: () => void;
   setAutoTp: (v: TpKey) => void;
-  scanAll: (navigateToSetup?: boolean) => Promise<void>;
+  scanAll: () => Promise<void>;
+  hunt: () => Promise<void>;
   refreshLead: () => Promise<void>;
   tickSim: () => void;
   paper: (side: "BUY" | "SELL") => void;
@@ -190,6 +191,48 @@ function pickSymbol(book: Book, challenge: boolean, equity: number, current?: st
   if (current && list.some((m) => m.id === current) && marketAllowed(current, challenge, equity)) return current;
   const open = list.find((m) => marketAllowed(m.id, challenge, equity));
   return open?.id ?? list[0]?.id ?? (book === "futures" ? "MNQ" : "BTCUSD");
+}
+
+function setupScore(id: string, a: Analysis | undefined, book: Book, challenge: boolean, eq: number) {
+  if (!a) return -1;
+  try {
+    if (marketById(id).book !== book) return -1;
+  } catch {
+    return -1;
+  }
+  const withTrend =
+    (a.signal === "BUY" && a.bias === "bull") || (a.signal === "SELL" && a.bias === "bear");
+  let s = a.setup?.score ?? a.zones[0]?.score ?? 0;
+  if (a.executable && a.signal !== "WAIT") {
+    s += 10000;
+    if (withTrend) s += 2000;
+    if (marketAllowed(id, challenge, eq)) s += 3000;
+    return s;
+  }
+  if (marketAllowed(id, challenge, eq)) s += 50;
+  if (a.amd?.phase === "distribution") s += 300;
+  if (a.amd?.mss) s += 200;
+  if ((a.setup?.touches ?? 99) < 3) s += 80;
+  s -= (a.issues ?? []).filter((i) => i.level === "block").length * 40;
+  return s;
+}
+
+function bestSetup(
+  analysis: Record<string, Analysis>,
+  book: Book,
+  challenge: boolean,
+  eq: number,
+  readyOnly = false,
+) {
+  let best: { id: string; score: number } | null = null;
+  for (const id of Object.keys(analysis)) {
+    const a = analysis[id];
+    if (readyOnly && !(a?.executable && a.signal !== "WAIT")) continue;
+    const score = setupScore(id, a, book, challenge, eq);
+    if (score < 0) continue;
+    if (!best || score > best.score) best = { id, score };
+  }
+  return best;
 }
 
 export const useDesk = create<DeskState>((set, get) => ({
@@ -222,7 +265,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   setSymbol: (id) => set({ symbol: id }),
   setTf: (tf) => {
     set({ tf });
-    void get().scanAll(false);
+    void get().scanAll();
   },
   setRisk: (r) => set({ risk: r }),
   setBook: (book) => {
@@ -286,7 +329,7 @@ export const useDesk = create<DeskState>((set, get) => ({
     });
   },
   setAutoTp: (v) => set({ autoTp: v }),
-  scanAll: async (navigateToSetup = true) => {
+  scanAll: async () => {
     const tf = get().tf;
     const leadId = get().symbol;
     const had = (get().candles[leadId]?.length ?? 0) > 8;
@@ -336,30 +379,85 @@ export const useDesk = create<DeskState>((set, get) => ({
         backtests[r.id] = r.backtest;
         if (r.live) anyLive = true;
       }
-      const equity = bookEquity({ challenge: get().challenge, positions: get().positions, closed: get().closed, candles });
-      const eligible = UNIVERSE.filter((m) => marketAllowed(m.id, get().challenge, equity)).map((market) => ({
-        market,
-        analysis: analysis[market.id],
-        bars: candles[market.id],
-      }));
-      const readiness = ({ analysis: a, bars }: (typeof eligible)[number]) => {
-        if (!a?.setup || !bars?.length) return -1000;
-        const last = bars.at(-1)!;
-        const zone = a.amd?.zone ?? a.setup;
-        const atr = a.atr || a.setup.atr || Math.abs(zone.top - zone.bot) || 1;
-        const distance = last.c > zone.top ? (last.c - zone.top) / atr : last.c < zone.bot ? (zone.bot - last.c) / atr : 0;
-        const withTrend = (a.setup.signal === "BUY" && a.bias === "bull") || (a.setup.signal === "SELL" && a.bias === "bear");
-        return (a.executable ? 10000 : 0) + (a.amd?.phase === "distribution" ? 3000 : a.amd?.phase === "manipulation" ? 1200 : 100) + (a.amd?.mss ? 900 : 0) + (withTrend ? 700 : 0) + Math.min(99, a.setup.score) * 4 - distance * 250 - (zone.touches >= 3 ? 1500 : 0);
-      };
-      const best = eligible.sort((a, b) => readiness(b) - readiness(a))[0];
       set({
         candles,
         analysis,
         backtests,
-        ...(navigateToSetup && best ? { symbol: best.market.id, book: best.market.book } : {}),
         scanning: false,
         live: anyLive,
-        feedLabel: navigateToSetup && best ? (best.analysis.executable ? `READY · ${best.market.id}` : `WATCH · ${best.market.id}`) : anyLive ? "LIVE FEED" : "SIM FEED",
+        feedLabel: anyLive ? "LIVE FEED" : "SIM FEED",
+      });
+    } catch {
+      set({ scanning: false, feedLabel: get().live ? "LIVE FEED" : "SIM FEED" });
+    }
+  },
+  hunt: async () => {
+    const s0 = get();
+    const eq = bookEquity(s0);
+    const allowed = marketsFor(s0.book);
+    const tfs = [s0.tf, ...[15, 5, 1, 30, 60].filter((t) => t !== s0.tf)];
+    set({ scanning: true, feedLabel: "SCANNING" });
+    const load = async (id: string, tf: number) => {
+      const m = marketById(id);
+      try {
+        const { candles: bars, live } = await fetchOhlc({ data: { id, tf } });
+        const tape = bars.length ? bars : synthesize(m, tf);
+        return { id, bars: tape, live: live && bars.length > 40, analysis: analyzeMarket(tape) };
+      } catch {
+        const tape = synthesize(m, tf);
+        return { id, bars: tape, live: false, analysis: analyzeMarket(tape) };
+      }
+    };
+    try {
+      type Hit = { id: string; tf: number; bars: Candle[]; analysis: Analysis; live: boolean; score: number };
+      let winner: Hit | null = null;
+      let closest: Hit | null = null;
+      let board: { id: string; bars: Candle[]; analysis: Analysis; live: boolean }[] = [];
+      for (const tf of tfs) {
+        const rows = await Promise.all(allowed.map((m) => load(m.id, tf)));
+        if (tf === s0.tf) board = rows;
+        const pack: Record<string, Analysis> = {};
+        for (const r of rows) {
+          pack[r.id] = r.analysis;
+          const score = setupScore(r.id, r.analysis, s0.book, s0.challenge, eq);
+          if (score > (closest?.score ?? -1)) closest = { ...r, tf, score };
+        }
+        const ready = bestSetup(pack, s0.book, s0.challenge, eq, true);
+        if (ready) {
+          const hit = rows.find((r) => r.id === ready.id);
+          if (hit) {
+            winner = { ...hit, tf, score: ready.score };
+            break;
+          }
+        }
+      }
+      const pick = winner ?? closest;
+      const candles = { ...get().candles };
+      const analysis = { ...get().analysis };
+      for (const r of board) {
+        candles[r.id] = r.bars;
+        analysis[r.id] = r.analysis;
+      }
+      if (pick) {
+        candles[pick.id] = pick.bars;
+        analysis[pick.id] = pick.analysis;
+        set({
+          symbol: pick.id,
+          tf: pick.tf,
+          candles,
+          analysis,
+          scanning: false,
+          live: pick.live || get().live,
+          feedLabel: pick.live || get().live ? "LIVE FEED" : "SIM FEED",
+        });
+        return;
+      }
+      set({
+        candles,
+        analysis,
+        scanning: false,
+        live: board.some((r) => r.live) || get().live,
+        feedLabel: board.some((r) => r.live) || get().live ? "LIVE FEED" : "SIM FEED",
       });
     } catch {
       set({ scanning: false, feedLabel: get().live ? "LIVE FEED" : "SIM FEED" });
@@ -386,10 +484,9 @@ export const useDesk = create<DeskState>((set, get) => ({
     const sess = nySession();
     if (flattenAtClose && sess.afterClose && lastFlatDate !== sess.date) {
       if (positions.length) get().flatten("NY CLOSE");
-      void useTl.getState().flattenBroker();
+      void useTl.getState().flattenBroker({ prompt: false });
       void useWb.getState().flattenBroker();
       set({ lastFlatDate: sess.date });
-      return;
     }
     const c = candles[symbol];
     if (!c?.length) return;

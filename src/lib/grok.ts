@@ -1,12 +1,16 @@
 import { createServerFn } from "@tanstack/react-start";
+import { requireApproved } from "@/lib/access";
+import { authMiddleware } from "@/lib/auth/middleware";
 
 export const askAmd = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { snapshot?: string };
     if (!o?.snapshot?.trim()) throw new Error("empty snapshot");
     return { snapshot: o.snapshot.slice(0, 1800) };
   })
-  .handler(async ({ data }): Promise<{ ok: true; text: string } | { ok: false; error: string }> => {
+  .handler(async ({ data, context }): Promise<{ ok: true; text: string } | { ok: false; error: string }> => {
+    await requireApproved(context.userId);
     const apiKey = process.env.XAI_API_KEY;
     if (!apiKey) return { ok: false, error: "AI is not available" };
     const res = await fetch("https://api.x.ai/v1/chat/completions", {
@@ -34,12 +38,14 @@ export const askAmd = createServerFn({ method: "POST" })
   });
 
 export const imagineCatch = createServerFn({ method: "POST" })
+  .middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { prompt?: string };
     if (!o?.prompt?.trim()) throw new Error("empty prompt");
     return { prompt: o.prompt.slice(0, 1400) };
   })
-  .handler(async ({ data }): Promise<{ ok: true; src: string } | { ok: false; error: string }> => {
+  .handler(async ({ data, context }): Promise<{ ok: true; src: string } | { ok: false; error: string }> => {
+    await requireApproved(context.userId);
     const apiKey = process.env.XAI_API_KEY;
     if (!apiKey) return { ok: false, error: "AI is not available" };
     const res = await fetch("https://api.x.ai/v1/images/generations", {

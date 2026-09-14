@@ -34,7 +34,7 @@ type TlState = {
   toggleCopy: (accNum: string) => void;
   setCopyAll: (on: boolean) => void;
   setLastCopy: (rows: CopyResult[]) => void;
-  flattenBroker: () => Promise<void>;
+  flattenBroker: (opts?: { prompt?: boolean }) => Promise<void>;
   logout: () => void;
 };
 
@@ -118,14 +118,13 @@ export const useTl = create<TlState>((set, get) => ({
         persist(next);
         set({ session: next, error: "", lastCopy: [] });
         return next;
-      } catch (e) {
+      } catch {
         persist(null);
         set({
           session: null,
           openTrades: [],
-          lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — log in again" }],
-          open: true,
-          error: e instanceof Error ? e.message : "TradeLocker session expired. Log in again.",
+          lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — tap FOREX and log in" }],
+          error: "session expired — tap FOREX and log in",
         });
         return null;
       } finally {
@@ -215,10 +214,10 @@ export const useTl = create<TlState>((set, get) => ({
     set({ session: next });
   },
   setLastCopy: (rows) => set({ lastCopy: rows }),
-  flattenBroker: async () => {
+  flattenBroker: async (opts) => {
     const session = await get().ensureToken();
     if (!session) {
-      set({ open: true, error: get().error || "Log into TradeLocker to flatten." });
+      if (opts?.prompt !== false) set({ open: true, error: get().error || "Log into TradeLocker to flatten." });
       return;
     }
     const copies = session.accounts.filter((a) => session.copyIds.includes(a.accNum));

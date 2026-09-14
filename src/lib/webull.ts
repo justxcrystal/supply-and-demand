@@ -1,5 +1,7 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createServerFn } from "@tanstack/react-start";
+import { requireApproved } from "@/lib/access";
+import { authMiddleware } from "@/lib/auth/middleware";
 
 export type WbEnv = "paper" | "live";
 
@@ -280,13 +282,14 @@ async function listTrades(env: WbEnv, appKey: string, appSecret: string, token: 
   return out;
 }
 
-export const wbLogin = createServerFn({ method: "POST" })
+export const wbLogin = createServerFn({ method: "POST" }).middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { appKey: string; appSecret: string; env: WbEnv };
     if (!o?.appKey || !o?.appSecret) throw new Error("App key and app secret are required");
     return { appKey: o.appKey.trim(), appSecret: o.appSecret.trim(), env: normalizeWbEnv(o.env) };
   })
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    await requireApproved(context.userId);
     const tok = asObj(
       await wbFetch({
         env: data.env,
@@ -314,7 +317,7 @@ export const wbLogin = createServerFn({ method: "POST" })
     };
   });
 
-export const wbRefresh = createServerFn({ method: "POST" })
+export const wbRefresh = createServerFn({ method: "POST" }).middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { env: WbEnv; appKey: string; appSecret: string; token: string; accounts: WbAccount[] };
     if (!o?.token || !o.appKey || !o.appSecret) throw new Error("Missing Webull session");
@@ -326,9 +329,12 @@ export const wbRefresh = createServerFn({ method: "POST" })
       accounts: Array.isArray(o.accounts) ? o.accounts : [],
     };
   })
-  .handler(async ({ data }) => refreshAccounts(data.env, data.appKey, data.appSecret, data.token, data.accounts));
+  .handler(async ({ data, context }) => {
+    await requireApproved(context.userId);
+    return refreshAccounts(data.env, data.appKey, data.appSecret, data.token, data.accounts);
+  });
 
-export const wbOpenTrades = createServerFn({ method: "POST" })
+export const wbOpenTrades = createServerFn({ method: "POST" }).middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { env: WbEnv; appKey: string; appSecret: string; token: string; accounts: WbAccount[] };
     if (!o?.token || !o.appKey || !o.appSecret) throw new Error("Missing Webull session");
@@ -340,7 +346,10 @@ export const wbOpenTrades = createServerFn({ method: "POST" })
       accounts: Array.isArray(o.accounts) ? o.accounts : [],
     };
   })
-  .handler(async ({ data }) => listTrades(data.env, data.appKey, data.appSecret, data.token, data.accounts));
+  .handler(async ({ data, context }) => {
+    await requireApproved(context.userId);
+    return listTrades(data.env, data.appKey, data.appSecret, data.token, data.accounts);
+  });
 
 async function placeFutures(opts: {
   env: WbEnv;
@@ -381,7 +390,7 @@ async function placeFutures(opts: {
   return { ok: true as const, symbol: opts.symbol, raw: JSON.stringify(raw).slice(0, 300) };
 }
 
-export const wbPlace = createServerFn({ method: "POST" })
+export const wbPlace = createServerFn({ method: "POST" }).middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as {
       env: WbEnv;
@@ -405,8 +414,9 @@ export const wbPlace = createServerFn({ method: "POST" })
       qty: Math.max(1, Math.round(Number(o.qty) || 1)),
     };
   })
-  .handler(async ({ data }) =>
-    placeFutures({
+  .handler(async ({ data, context }) => {
+    await requireApproved(context.userId);
+    return placeFutures({
       env: data.env,
       appKey: data.appKey,
       appSecret: data.appSecret,
@@ -415,10 +425,10 @@ export const wbPlace = createServerFn({ method: "POST" })
       symbol: frontMonth(data.product),
       side: data.side,
       qty: data.qty,
-    }),
-  );
+    });
+  });
 
-export const wbFlatten = createServerFn({ method: "POST" })
+export const wbFlatten = createServerFn({ method: "POST" }).middleware([authMiddleware])
   .validator((d: unknown) => {
     const o = d as { env: WbEnv; appKey: string; appSecret: string; token: string; accounts: WbAccount[] };
     if (!o?.token || !o.appKey || !o.appSecret) throw new Error("Missing Webull session");
@@ -430,7 +440,8 @@ export const wbFlatten = createServerFn({ method: "POST" })
       accounts: Array.isArray(o.accounts) ? o.accounts : [],
     };
   })
-  .handler(async ({ data }) => {
+  .handler(async ({ data, context }) => {
+    await requireApproved(context.userId);
     const trades = await listTrades(data.env, data.appKey, data.appSecret, data.token, data.accounts);
     if (!trades.length) return [{ acc: "Webull", ok: true, msg: "already flat" }];
     const rows: Array<{ acc: string; ok: boolean; msg: string }> = [];

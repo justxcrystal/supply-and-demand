@@ -16,3 +16,7 @@ screenshots/*.json
 *.log
 .DS_Store
 
+
+attachments/
+.grok/*
+!.grok/app-env.json

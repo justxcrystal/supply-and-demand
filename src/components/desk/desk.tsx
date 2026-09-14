@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AccessChip, AccessPanel, useDeskAccess } from "@/components/desk/access-gate";
 import { CatchCard } from "@/components/desk/catch-card";
 import { PriceChart, toHeikin } from "@/components/desk/chart";
 import { ManualTicket } from "@/components/desk/manual-ticket";
@@ -101,6 +102,7 @@ export function Desk() {
   const setTf = useDesk((s) => s.setTf);
   const setRisk = useDesk((s) => s.setRisk);
   const scanAll = useDesk((s) => s.scanAll);
+  const hunt = useDesk((s) => s.hunt);
   const refreshLead = useDesk((s) => s.refreshLead);
   const tickSim = useDesk((s) => s.tickSim);
   const paper = useDesk((s) => s.paper);
@@ -133,7 +135,7 @@ export function Desk() {
   }, [skin]);
 
   useEffect(() => {
-    void scanAll(false);
+    void scanAll();
   }, [scanAll, tf]);
 
   useEffect(() => {
@@ -194,6 +196,11 @@ export function Desk() {
     const env = tl.env.toUpperCase();
     return lead ? `TRADELOCKER ${env} · ${lead.name}` : `TRADELOCKER ${env} · ${tl.server}`;
   }, [book, wb, wbAcc, tl, challenge, lead]);
+  const access = useDeskAccess();
+  const openBroker = (id: "forex" | "futures") => {
+    if (id === "forex") useTl.getState().setOpen(true);
+    else useWb.getState().setOpen(true);
+  };
 
   return (
     <div className="flex min-h-dvh flex-col bg-transparent text-fg">
@@ -220,6 +227,7 @@ export function Desk() {
           >
             {skin === "gamer" ? "Command" : "Gamer girl"}
           </button>
+          <AccessChip access={access} />
           {(["forex", "futures"] as const).map((id) => {
             const on = book === id;
             const live = id === "forex" ? tl : wb;
@@ -231,8 +239,7 @@ export function Desk() {
                 type="button"
                 onClick={() => {
                   if (on) {
-                    if (id === "forex") useTl.getState().setOpen(true);
-                    else useWb.getState().setOpen(true);
+                    openBroker(id);
                     return;
                   }
                   setBook(id);
@@ -504,10 +511,10 @@ export function Desk() {
               </button>
               <button
                 type="button"
-                onClick={() => void scanAll(true)}
+                onClick={() => void hunt()}
                 className="hud-chip h-10 border border-line px-4 font-mono text-xs uppercase tracking-wider text-muted"
               >
-                {scanning ? "Scanning…" : "Find setup"}
+                {scanning ? "SCANNING" : "Scan"}
               </button>
             </div>
           </section>
@@ -818,6 +825,7 @@ export function Desk() {
       <WebullRuntime />
       <TradeLockerPanel />
       <WebullPanel />
+      <AccessPanel access={access} />
     </div>
   );
 }

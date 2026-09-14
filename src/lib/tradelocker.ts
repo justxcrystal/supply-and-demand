@@ -578,7 +578,9 @@ export const tlRefreshMoney = createServerFn({ method: "POST" })
       })),
     };
   })
-  .handler(async ({ data }) => refreshAccountMoney(data.env, data.token, data.accounts));
+  .handler(async ({ data }) => {
+    return refreshAccountMoney(data.env, data.token, data.accounts);
+  });
 
 export const tlOpenTrades = createServerFn({ method: "POST" })
   .validator((d: unknown) => {
@@ -597,7 +599,9 @@ export const tlOpenTrades = createServerFn({ method: "POST" })
       })),
     };
   })
-  .handler(async ({ data }) => listOpenTrades(data.env, data.token, data.accounts));
+  .handler(async ({ data }) => {
+    return listOpenTrades(data.env, data.token, data.accounts);
+  });
 
 export const tlPlace = createServerFn({ method: "POST" })
   .validator((d: unknown) => {
