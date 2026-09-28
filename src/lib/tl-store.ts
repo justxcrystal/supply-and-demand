@@ -24,6 +24,8 @@ type TlState = {
   session: Session | null;
   lastCopy: CopyResult[];
   openTrades: TlOpenTrade[];
+  tradesReady: boolean;
+  tradesError: string;
   setOpen: (v: boolean) => void;
   hydrate: () => void;
   login: (p: { email: string; password: string; server: string; env: TlEnv }) => Promise<void>;
@@ -61,6 +63,8 @@ export const useTl = create<TlState>((set, get) => ({
   session: null,
   lastCopy: [],
   openTrades: [],
+  tradesReady: false,
+  tradesError: "",
   setOpen: (v) => set({ open: v, error: "" }),
   hydrate: () => {
     try {
@@ -70,7 +74,7 @@ export const useTl = create<TlState>((set, get) => ({
       if (s?.accessToken) {
         s.env = normalizeEnv(s.env);
         if (!s.copyIds?.length) s.copyIds = s.accounts.map((a) => a.accNum);
-        set({ session: s });
+        set({ session: s, tradesReady: false, tradesError: "" });
         void get().refreshMoney();
         void get().refreshTrades();
       }
@@ -89,7 +93,7 @@ export const useTl = create<TlState>((set, get) => ({
         copyIds,
       };
       persist(session);
-      set({ session, busy: false, open: false, error: "", lastCopy: [] });
+      set({ session, busy: false, open: false, error: "", lastCopy: [], tradesReady: false, tradesError: "" });
       void get().refreshTrades();
     } catch (e) {
       set({
@@ -116,13 +120,14 @@ export const useTl = create<TlState>((set, get) => ({
         if (!cur) return null;
         const next = { ...cur, ...r };
         persist(next);
-        set({ session: next, error: "", lastCopy: [] });
+        set({ session: next, error: "", lastCopy: [], tradesReady: false });
         return next;
       } catch {
         persist(null);
         set({
           session: null,
           openTrades: [],
+          tradesReady: false,
           lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — tap FOREX and log in" }],
           error: "session expired — tap FOREX and log in",
         });
@@ -157,6 +162,7 @@ export const useTl = create<TlState>((set, get) => ({
         set({
           session: null,
           open: true,
+          tradesReady: false,
           error: "TradeLocker session expired. Log in again.",
           lastCopy: [{ acc: "TradeLocker", ok: false, msg: "session expired — log in again" }],
         });
@@ -178,10 +184,11 @@ export const useTl = create<TlState>((set, get) => ({
         },
       });
       if (!get().session) return;
-      set({ openTrades });
+      set({ openTrades, tradesReady: true, tradesError: "" });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "";
-      if (isTlAuthError(msg)) void get().ensureToken();
+      const msg = e instanceof Error ? e.message : "Could not verify open trades";
+      set({ tradesReady: false, tradesError: msg });
+      if (isTlAuthError(msg)) void get().ensureToken(true);
     } finally {
       tradeLock = false;
     }
@@ -235,7 +242,7 @@ export const useTl = create<TlState>((set, get) => ({
   },
   logout: () => {
     persist(null);
-    set({ session: null, error: "", lastCopy: [], openTrades: [] });
+    set({ session: null, error: "", lastCopy: [], openTrades: [], tradesReady: false, tradesError: "" });
   },
 }));
 

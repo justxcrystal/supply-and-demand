@@ -48,6 +48,8 @@ export function TradeLockerPanel() {
   const session = useTl((s) => s.session);
   const login = useTl((s) => s.login);
   const openTrades = useTl((s) => s.openTrades);
+  const tradesReady = useTl((s) => s.tradesReady);
+  const tradesError = useTl((s) => s.tradesError);
   const [email, setEmail] = useState(() => {
     try {
       return localStorage.getItem("sd.tl.email") ?? "";
@@ -142,7 +144,9 @@ export function TradeLockerPanel() {
             <p className="font-mono text-[10px] uppercase tracking-wider text-muted">
               Open trades · {openTrades.length}
             </p>
-            {openTrades.length === 0 ? (
+            {!tradesReady ? (
+              <p className="font-mono text-[11px] text-sell">{tradesError || "Checking open trades…"}</p>
+            ) : openTrades.length === 0 ? (
               <p className="font-mono text-[11px] text-muted">None on this login.</p>
             ) : (
               <div className="max-h-40 space-y-1 overflow-auto">

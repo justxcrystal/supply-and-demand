@@ -86,6 +86,7 @@ export function Desk() {
   const backtests = useDesk((s) => s.backtests);
   const scanning = useDesk((s) => s.scanning);
   const feedLabel = useDesk((s) => s.feedLabel);
+  const liveBySymbol = useDesk((s) => s.liveBySymbol);
   const positions = useDesk((s) => s.positions);
   const closed = useDesk((s) => s.closed);
   const armed = useDesk((s) => s.armed);
@@ -122,6 +123,8 @@ export function Desk() {
   const tl = useTl((s) => s.session);
   const lastCopyTl = useTl((s) => s.lastCopy);
   const openTradesTl = useTl((s) => s.openTrades);
+  const tlTradesReady = useTl((s) => s.tradesReady);
+  const tlTradesError = useTl((s) => s.tradesError);
   const wb = useWb((s) => s.session);
   const lastCopyWb = useWb((s) => s.lastCopy);
   const openTradesWb = useWb((s) => s.openTrades);
@@ -733,7 +736,17 @@ export function Desk() {
                 </button>
               </div>
             ) : null}
-            <Toggle label="Live execution" hint="Auto BUY/SELL with trend · trail · TP6" on={armed} onChange={toggleArmed} />
+            <Toggle label="Auto signals" hint="Runs while this desk is open · requires live feed and broker send" on={armed} onChange={toggleArmed} />
+            {armed ? (
+              <p className="mt-2 font-mono text-[11px] text-muted" role="status">
+                {!allowed ? "Auto blocked: $100 challenge locks this market until $200 paper equity."
+                  : !liveBySymbol[symbol] ? "Auto blocked: chart feed is simulated or unavailable."
+                  : book === "forex" && (!sendTl || !tl) ? "Auto is paper only: connect TradeLocker and enable Send to TradeLocker."
+                  : book === "forex" && !tlTradesReady ? `Auto blocked: ${tlTradesError || "checking broker open trades"}.`
+                  : book === "futures" && (!sendWb || !wb) ? "Auto is paper only: connect Webull and enable Send to Webull."
+                  : "Auto ready: waiting for an executable AMD retest with trend."}
+              </p>
+            ) : null}
             <Toggle
               label={book === "futures" ? "Send to Webull" : "Send to TradeLocker"}
               hint={
@@ -752,7 +765,7 @@ export function Desk() {
               <div className="mt-3 space-y-1">
                 {lastCopy.map((row) => (
                   <p key={row.acc} className={cn("font-mono text-[10px]", row.ok ? "text-buy" : "text-sell")}>
-                    {row.ok ? "COPIED" : "FAIL"} · {row.acc} · {row.msg}
+                    {row.ok ? "ACCEPTED" : row.msg === "Submitting…" ? "PENDING" : "FAIL"} · {row.acc} · {row.msg}
                   </p>
                 ))}
                 {book === "forex" && lastCopy.some((r) => !r.ok) ? (
