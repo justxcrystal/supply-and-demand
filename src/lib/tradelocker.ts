@@ -1,4 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
+import { assertOrderAccepted, selectTradeInstrument, type OrderInstrument } from "./tradelocker-order";
 
 export type TlEnv = "broker" | "live";
 
@@ -149,9 +150,9 @@ type AccRow = {
 function parseErr(status: number, text: string): string {
   try {
     const j = JSON.parse(text) as { message?: string; error?: string; s?: string };
-    return j.message || j.error || text || `TradeLocker ${status}`;
+    return `TradeLocker ${status}: ${j.message || j.error || j.s || text || "request failed"}`;
   } catch {
-    return text || `TradeLocker ${status}`;
+    return `TradeLocker ${status}: ${text || "request failed"}`;
   }
 }
 
@@ -451,6 +452,7 @@ async function fetchAccountPositions(
   const text = await res.text();
   if (!res.ok) throw new Error(parseErr(res.status, text));
   const body = unwrap(JSON.parse(text));
+  if (body.s && body.s !== "ok") throw new Error(String(body.message ?? body.s));
   const rows = Array.isArray(body.positions) ? body.positions : [];
   return rows
     .map((row) => (Array.isArray(row) ? parsePositionRow(cols, row, account, names) : null))
@@ -462,11 +464,7 @@ export async function listOpenTrades(env: TlEnv, token: string, accounts: TlAcco
   const cols = await fetchPositionColumns(env, token, accounts[0].accNum);
   const names = await fetchInstrumentNames(env, token, accounts[0]);
   const nested = await mapPool(accounts, 2, async (a) => {
-    try {
-      return await fetchAccountPositions(env, token, a, cols, names);
-    } catch {
-      return [] as TlOpenTrade[];
-    }
+    return fetchAccountPositions(env, token, a, cols, names);
   });
   return nested.flat();
 }
@@ -516,6 +514,8 @@ export const tlLogin = createServerFn({ method: "POST" })
         .map(mapAccount)
         .filter((a) => a.id && a.accNum);
     }
+    if (!accRes.ok) throw new Error(`Could not load TradeLocker accounts: ${parseErr(accRes.status, await accRes.text())}`);
+    if (!accounts.length) throw new Error("TradeLocker returned no accounts for this login and environment");
 
     const withState = await refreshAccountMoney(data.env, tokens.accessToken, accounts);
 
@@ -620,6 +620,9 @@ export const tlPlace = createServerFn({ method: "POST" })
     return o;
   })
   .handler(async ({ data }) => {
+    if (!Number.isFinite(data.qty) || data.qty <= 0 || !Number.isFinite(data.sl) || !Number.isFinite(data.tp)) {
+      throw new Error("Invalid order quantity, stop, or target");
+    }
     const base = BASE[data.env];
     const headers = {
       accept: "application/json",
@@ -630,26 +633,13 @@ export const tlPlace = createServerFn({ method: "POST" })
     const instRes = await fetch(`${base}/trade/accounts/${data.accountId}/instruments`, { headers });
     const instText = await instRes.text();
     if (!instRes.ok) throw new Error(parseErr(instRes.status, instText));
-    const instBody = JSON.parse(instText) as {
-      d?: {
-        instruments?: Array<{
-          tradableInstrumentId: number;
-          name: string;
-          routes?: Array<{ id: number; type: string }>;
-        }>;
-      };
-    };
-    const want = data.symbol.toUpperCase().replace(/[^A-Z0-9]/g, "");
-    const inst = (instBody.d?.instruments ?? []).find((i) => {
-      const n = i.name.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      return n === want || n.includes(want) || want.includes(n);
-    });
-    if (!inst) throw new Error(`No TradeLocker instrument for ${data.symbol} on ${data.accountId}`);
-    const route = inst.routes?.find((r) => r.type === "TRADE") ?? inst.routes?.[0];
-    if (!route) throw new Error(`No TRADE route for ${inst.name}`);
+    const instBody = unwrap(JSON.parse(instText));
+    if (instBody.s && instBody.s !== "ok") throw new Error(String(instBody.message ?? instBody.s));
+    const instruments = (Array.isArray(instBody.instruments) ? instBody.instruments : []) as OrderInstrument[];
+    const { instrument: inst, routeId } = selectTradeInstrument(instruments, data.symbol);
     const body = {
       qty: data.qty,
-      routeId: route.id,
+      routeId,
       side: data.side === "BUY" ? "buy" : "sell",
       validity: "IOC",
       type: "market",
@@ -667,6 +657,7 @@ export const tlPlace = createServerFn({ method: "POST" })
     });
     const ot = await ord.text();
     if (!ord.ok) throw new Error(parseErr(ord.status, ot));
+    assertOrderAccepted(ot);
     return { ok: true as const, accountId: data.accountId, raw: ot.slice(0, 300) };
   });
 

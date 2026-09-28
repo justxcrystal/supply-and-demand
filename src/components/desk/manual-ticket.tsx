@@ -87,7 +87,9 @@ export function ManualTicket({
     }
     setSide(next);
     manual({ side: next, entry: entryN, sl: slN, qty: qtyN });
-    setMsg(`${next} ${meta.id} sent`);
+    setMsg(book === "forex" && sendTl || book === "futures" && sendWb
+      ? `${next} ${meta.id} requested — check the broker result below`
+      : `${next} ${meta.id} added to paper`);
   }
 
   function snap() {
@@ -188,10 +190,10 @@ export function ManualTicket({
           ? `$100 · crypto only until $${CRYPTO_UNLOCK}`
           : book === "futures"
             ? sendWb
-              ? "Sends paper + 1 Webull market if Send is on"
+              ? "Requests 1 Webull market order; check broker result"
               : "Paper now. Arm Send to Webull for live"
             : sendTl
-              ? "Sends paper + TradeLocker market + SL + TP6 if Send is on"
+              ? "Requests TradeLocker market + SL + TP6; check broker result"
               : "Paper now. Arm Send to TradeLocker for live"}
       </p>
       {msg ? <p className="mt-1 font-mono text-[11px] text-entry">{msg}</p> : null}

@@ -16,6 +16,8 @@ export const CHALLENGE_EQ = 100;
 export const CRYPTO_UNLOCK = 200;
 export const START_EQ = DESK_EQ;
 const VAULT = "sd.desk.vault.v1";
+const pendingOrders = new Set<string>();
+const autoSignals = new Set<string>();
 
 type Skin = "command" | "gamer";
 
@@ -136,6 +138,7 @@ type DeskState = {
   analysis: Record<string, Analysis>;
   backtests: Record<string, BacktestStats>;
   live: boolean;
+  liveBySymbol: Record<string, boolean>;
   scanning: boolean;
   feedLabel: string;
   positions: Position[];
@@ -180,7 +183,7 @@ type DeskState = {
 };
 
 const vault = loadVault();
-const challengeOn = vault.challenge ?? true;
+const challengeOn = vault.challenge ?? false;
 const deskPositions = vault.deskPositions ?? (vault.challenge === true ? [] : (vault.positions ?? []));
 const deskClosed = vault.deskClosed ?? (vault.challenge === true ? [] : (vault.closed ?? []));
 const challengePositions = vault.challengePositions ?? (vault.challenge === true ? vault.positions ?? [] : []);
@@ -243,6 +246,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   analysis: {},
   backtests: {},
   live: false,
+  liveBySymbol: {},
   scanning: false,
   feedLabel: "FEED",
   positions: challengeOn ? challengePositions : deskPositions,
@@ -262,7 +266,7 @@ export const useDesk = create<DeskState>((set, get) => ({
   lastFlatDate: vault.lastFlatDate ?? "",
   skin: vault.skin === "gamer" ? "gamer" : "command",
   book: vault.book === "futures" ? "futures" : "forex",
-  setSymbol: (id) => set({ symbol: id }),
+  setSymbol: (id) => set({ symbol: id, live: get().liveBySymbol[id] ?? false, feedLabel: get().liveBySymbol[id] ? "LIVE FEED" : "SIM FEED" }),
   setTf: (tf) => {
     set({ tf });
     void get().scanAll();
@@ -276,7 +280,8 @@ export const useDesk = create<DeskState>((set, get) => ({
       closed: s.closed,
       candles: s.candles,
     });
-    set({ book, symbol: pickSymbol(book, s.challenge, eq, s.symbol) });
+    const symbol = pickSymbol(book, s.challenge, eq, s.symbol);
+    set({ book, symbol, live: s.liveBySymbol[symbol] ?? false, feedLabel: s.liveBySymbol[symbol] ? "LIVE FEED" : "SIM FEED" });
   },
   toggleArmed: () => set({ armed: !get().armed }),
   toggleSendTl: () => set({ sendTl: !get().sendTl }),
@@ -363,29 +368,31 @@ export const useDesk = create<DeskState>((set, get) => ({
         candles: { ...get().candles, [first.id]: first.bars },
         analysis: { ...get().analysis, [first.id]: first.analysis },
         backtests: { ...get().backtests, [first.id]: first.backtest },
+        liveBySymbol: { ...get().liveBySymbol, [first.id]: first.live },
         scanning: false,
-        live: first.live || get().live,
-        feedLabel: first.live || get().live ? "LIVE FEED" : "SIM FEED",
+        live: first.live,
+        feedLabel: first.live ? "LIVE FEED" : "SIM FEED",
       });
       const rest = UNIVERSE.filter((m) => m.id !== leadId);
       const results = await Promise.all(rest.map((m) => loadOne(m.id)));
       const candles: Record<string, Candle[]> = { ...get().candles, [first.id]: first.bars };
       const analysis: Record<string, Analysis> = { ...get().analysis, [first.id]: first.analysis };
       const backtests: Record<string, BacktestStats> = { ...get().backtests, [first.id]: first.backtest };
-      let anyLive = first.live;
+      const liveBySymbol = { ...get().liveBySymbol, [first.id]: first.live };
       for (const r of results) {
         candles[r.id] = r.bars;
         analysis[r.id] = r.analysis;
         backtests[r.id] = r.backtest;
-        if (r.live) anyLive = true;
+        liveBySymbol[r.id] = r.live;
       }
       set({
         candles,
         analysis,
         backtests,
+        liveBySymbol,
         scanning: false,
-        live: anyLive,
-        feedLabel: anyLive ? "LIVE FEED" : "SIM FEED",
+        live: liveBySymbol[get().symbol] ?? false,
+        feedLabel: liveBySymbol[get().symbol] ? "LIVE FEED" : "SIM FEED",
       });
     } catch {
       set({ scanning: false, feedLabel: get().live ? "LIVE FEED" : "SIM FEED" });
@@ -438,41 +445,47 @@ export const useDesk = create<DeskState>((set, get) => ({
         candles[r.id] = r.bars;
         analysis[r.id] = r.analysis;
       }
+      const liveBySymbol = { ...get().liveBySymbol };
+      for (const r of board) liveBySymbol[r.id] = r.live;
       if (pick) {
         candles[pick.id] = pick.bars;
         analysis[pick.id] = pick.analysis;
+        liveBySymbol[pick.id] = pick.live;
         set({
           symbol: pick.id,
           tf: pick.tf,
           candles,
           analysis,
+          liveBySymbol,
           scanning: false,
-          live: pick.live || get().live,
-          feedLabel: pick.live || get().live ? "LIVE FEED" : "SIM FEED",
+          live: pick.live,
+          feedLabel: pick.live ? "LIVE FEED" : "SIM FEED",
         });
         return;
       }
       set({
         candles,
         analysis,
+        liveBySymbol,
         scanning: false,
-        live: board.some((r) => r.live) || get().live,
-        feedLabel: board.some((r) => r.live) || get().live ? "LIVE FEED" : "SIM FEED",
+        live: liveBySymbol[get().symbol] ?? false,
+        feedLabel: liveBySymbol[get().symbol] ? "LIVE FEED" : "SIM FEED",
       });
     } catch {
       set({ scanning: false, feedLabel: get().live ? "LIVE FEED" : "SIM FEED" });
     }
   },
   refreshLead: async () => {
-    const { symbol, tf, candles, analysis, live } = get();
+    const { symbol, tf, candles, analysis } = get();
     try {
       const r = await fetchOhlc({ data: { id: symbol, tf } });
       if (!r.candles.length) return;
       set({
         candles: { ...candles, [symbol]: r.candles },
         analysis: { ...analysis, [symbol]: analyzeMarket(r.candles) },
-        live: r.live || live,
-        feedLabel: r.live || live ? "LIVE FEED" : get().feedLabel,
+        liveBySymbol: { ...get().liveBySymbol, [symbol]: r.live },
+        live: r.live,
+        feedLabel: r.live ? "LIVE FEED" : "SIM FEED",
         scanning: false,
       });
     } catch {
@@ -550,11 +563,16 @@ export const useDesk = create<DeskState>((set, get) => ({
     });
     const a = analysis[symbol];
     const eq = bookEquity({ challenge, positions: still, closed: nextClosed, candles: next });
-    if (get().armed && a.executable && a.setup && a.setup.signal !== "WAIT" && marketAllowed(symbol, challenge, eq)) {
+    if (live && get().armed && a.executable && a.setup && a.setup.signal !== "WAIT" && marketAllowed(symbol, challenge, eq)) {
       const withTrend =
         (a.setup.signal === "BUY" && a.bias === "bull") ||
         (a.setup.signal === "SELL" && a.bias === "bear");
-      if (withTrend) get().paper(a.setup.signal);
+      const key = `${symbol}:${get().tf}:${c.at(-1)?.t}:${a.setup.signal}`;
+      if (withTrend && !autoSignals.has(key)) {
+        autoSignals.add(key);
+        if (autoSignals.size > 100) autoSignals.delete(autoSignals.values().next().value!);
+        get().paper(a.setup.signal);
+      }
     }
   },
   paper: (side: Signal) => {
@@ -590,6 +608,81 @@ export const useDesk = create<DeskState>((set, get) => ({
     const copies = session ? session.accounts.filter((acc) => session.copyIds.includes(acc.accNum)) : [];
     const wb = useWb.getState().session;
     const wbLead = wb ? (wb.accounts.find((a) => a.id === wb.accountId) ?? wb.accounts[0]) : undefined;
+    if (book === "forex" && sendTl) {
+      if (!copies.length) {
+        tl.setLastCopy([{ acc: "TradeLocker", ok: false, msg: "Log in and select at least one copy account" }]);
+        return;
+      }
+      if (!tl.tradesReady) {
+        tl.setLastCopy([{ acc: "TradeLocker", ok: false, msg: tl.tradesError || "Checking open trades; try again shortly" }]);
+        void tl.refreshTrades();
+        return;
+      }
+      const qty = p.qty ?? Math.max(0.01, Math.round(Number(risk) * 100) / 10000);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        tl.setLastCopy([{ acc: "TradeLocker", ok: false, msg: "Enter a valid lot size" }]);
+        return;
+      }
+      const open = tl.openTrades.find((trade) => copies.some((acc) => acc.accNum === trade.accNum));
+      if (open) {
+        tl.setLastCopy([{ acc: open.accountId, ok: false, msg: `Close the existing ${open.symbol} trade before sending another` }]);
+        return;
+      }
+      const available = copies.filter((acc) => !pendingOrders.has(`tl:${acc.accNum}`));
+      if (available.length !== copies.length) {
+        tl.setLastCopy([{ acc: "TradeLocker", ok: false, msg: "An order is already being submitted" }]);
+        return;
+      }
+      available.forEach((acc) => pendingOrders.add(`tl:${acc.accNum}`));
+      tl.setLastCopy(available.map((acc) => ({ acc: acc.id, ok: false, msg: "Submitting…" })));
+      void (async () => {
+        try {
+          const fresh = await useTl.getState().ensureToken();
+          if (!fresh) {
+            tl.setLastCopy([{ acc: "TradeLocker", ok: false, msg: "Session expired — log in again" }]);
+            return;
+          }
+          const rows = await Promise.all(available.map(async (acc) => {
+            const order = { accountId: acc.id, accNum: acc.accNum, symbol: meta.id, side, sl, tp: tps[5] ?? tps[1], qty };
+            try {
+              await tlPlace({ data: { ...order, env: fresh.env, token: fresh.accessToken } });
+              return { acc: acc.id, ok: true, msg: "Order accepted; check open trades for fill" };
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : "Order failed";
+              if (!isTlAuthError(msg)) return { acc: acc.id, ok: false, msg: tlFailMsg(msg) };
+              const retry = await useTl.getState().ensureToken(true);
+              if (!retry) return { acc: acc.id, ok: false, msg: "Session expired — log in again" };
+              try {
+                await tlPlace({ data: { ...order, env: retry.env, token: retry.accessToken } });
+                return { acc: acc.id, ok: true, msg: "Order accepted; check open trades for fill" };
+              } catch (e2) {
+                return { acc: acc.id, ok: false, msg: tlFailMsg(e2 instanceof Error ? e2.message : "Order failed") };
+              }
+            }
+          }));
+          tl.setLastCopy(rows);
+          void tl.refreshTrades();
+        } finally {
+          available.forEach((acc) => pendingOrders.delete(`tl:${acc.accNum}`));
+        }
+      })();
+      return;
+    }
+    if (book === "futures" && sendWb) {
+      if (!wb || !wbLead || !meta.wb) {
+        useWb.getState().setLastCopy([{ acc: "Webull", ok: false, msg: "Connect a futures account for this symbol" }]);
+        return;
+      }
+      const key = `wb:${wbLead.id}`;
+      if (pendingOrders.has(key)) return;
+      pendingOrders.add(key);
+      useWb.getState().setLastCopy([{ acc: wbLead.label, ok: false, msg: "Submitting…" }]);
+      void wbPlace({ data: { env: wb.env, appKey: wb.appKey, appSecret: wb.appSecret, token: wb.token, accountId: wbLead.id, product: meta.wb, side, qty: Math.max(1, Math.round(p.qty ?? 1)) } })
+        .then(() => useWb.getState().setLastCopy([{ acc: wbLead.label, ok: true, msg: `Order accepted for ${meta.wb}` }]))
+        .catch((e) => useWb.getState().setLastCopy([{ acc: wbLead.label, ok: false, msg: e instanceof Error ? e.message : "Order failed" }]))
+        .finally(() => pendingOrders.delete(key));
+      return;
+    }
     const targets =
       book === "forex" && copies.length > 0
         ? copies.map((acc) => ({ key: acc.accNum, label: acc.id }))
@@ -623,79 +716,6 @@ export const useDesk = create<DeskState>((set, get) => ({
       positions: nextPos,
       ...(challenge ? { challengePositions: nextPos } : { deskPositions: nextPos }),
     });
-    if (book === "forex" && sendTl && copies.length) {
-      const qty = Math.max(0.01, p.qty ?? Math.round(Number(risk) * 100) / 10000);
-      void (async () => {
-        const fresh = await useTl.getState().ensureToken();
-        if (!fresh) {
-          useTl.getState().setLastCopy([{ acc: "TradeLocker", ok: false, msg: "session expired — log in again" }]);
-          return;
-        }
-        const rows = await Promise.all(
-          copies.map(async (acc) => {
-            try {
-              await tlPlace({
-                data: {
-                  env: fresh.env,
-                  token: fresh.accessToken,
-                  accountId: acc.id,
-                  accNum: acc.accNum,
-                  symbol: meta.id,
-                  side,
-                  sl,
-                  tp: tps[5] ?? tps[1],
-                  qty,
-                },
-              });
-              return { acc: acc.id, ok: true, msg: "copied" };
-            } catch (e) {
-              const msg = e instanceof Error ? e.message : "copy failed";
-              if (!isTlAuthError(msg)) return { acc: acc.id, ok: false, msg: tlFailMsg(msg) };
-              const retry = await useTl.getState().ensureToken(true);
-              if (!retry) return { acc: acc.id, ok: false, msg: "session expired — log in again" };
-              try {
-                await tlPlace({
-                  data: {
-                    env: retry.env,
-                    token: retry.accessToken,
-                    accountId: acc.id,
-                    accNum: acc.accNum,
-                    symbol: meta.id,
-                    side,
-                    sl,
-                    tp: tps[5] ?? tps[1],
-                    qty,
-                  },
-                });
-                return { acc: acc.id, ok: true, msg: "copied" };
-              } catch (e2) {
-                return { acc: acc.id, ok: false, msg: tlFailMsg(e2 instanceof Error ? e2.message : "copy failed") };
-              }
-            }
-          }),
-        );
-        useTl.getState().setLastCopy(rows);
-        void useTl.getState().refreshTrades();
-      })();
-    }
-    if (book === "futures" && sendWb && wb && wbLead && meta.wb) {
-      void wbPlace({
-        data: {
-          env: wb.env,
-          appKey: wb.appKey,
-          appSecret: wb.appSecret,
-          token: wb.token,
-          accountId: wbLead.id,
-          product: meta.wb,
-          side,
-          qty: Math.max(1, Math.round(p.qty ?? 1)),
-        },
-      })
-        .then(() => useWb.getState().setLastCopy([{ acc: wbLead.label, ok: true, msg: `copied ${meta.wb}` }]))
-        .catch((e) =>
-          useWb.getState().setLastCopy([{ acc: wbLead.label, ok: false, msg: e instanceof Error ? e.message : "copy failed" }]),
-        );
-    }
   },
   flatten: (reason = "FLATTEN") => {
     const { positions, candles, closed, challenge } = get();
