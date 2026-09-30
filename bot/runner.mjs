@@ -44,10 +44,12 @@ function config() {
     once: bool("BOT_ONCE", false),
     liveTradingEnabled: bool("BOT_LIVE_TRADING", false),
     tl: {
-      env: String(process.env.BOT_TL_ENV ?? "broker").toLowerCase() === "live" ? "live" : "broker",
+      env: String(process.env.BOT_TL_ENV ?? "bsb").toLowerCase(),
+      baseUrl: process.env.BOT_TL_BASE_URL ?? "",
       email: process.env.BOT_TL_EMAIL ?? "",
       password: process.env.BOT_TL_PASSWORD ?? "",
-      server: process.env.BOT_TL_SERVER ?? "",
+      server: process.env.BOT_TL_SERVER ?? "ATLAS",
+      accountId: process.env.BOT_TL_ACCOUNT_ID ?? "",
       accountNum: process.env.BOT_TL_ACCOUNT_NUM ?? "",
     },
   };
@@ -100,6 +102,7 @@ function validateLiveConfig(cfg) {
     ["BOT_TL_EMAIL", cfg.tl.email],
     ["BOT_TL_PASSWORD", cfg.tl.password],
     ["BOT_TL_SERVER", cfg.tl.server],
+    ["BOT_TL_ACCOUNT_ID", cfg.tl.accountId],
   ].filter(([, value]) => !value).map(([name]) => name);
   if (missing.length) throw new Error(`Missing ${missing.join(", ")}`);
 }
@@ -108,9 +111,13 @@ async function processSymbol(cfg, state, broker, symbol) {
   const meta = marketById(symbol);
   let candles;
   try {
-    candles = await loadYahoo(meta, cfg.tf);
+    candles = cfg.mode === "live" ? await broker.history(symbol, cfg.tf) : await loadYahoo(meta, cfg.tf);
   } catch (error) {
-    log("market_data_skip", { symbol, reason: error instanceof Error ? error.message : String(error) });
+    log("market_data_skip", {
+      symbol,
+      source: cfg.mode === "live" ? "tradelocker" : "yahoo",
+      reason: error instanceof Error ? error.message : String(error),
+    });
     return;
   }
 
@@ -191,7 +198,7 @@ async function main() {
   const broker = cfg.mode === "live" ? new TradeLockerClient(cfg.tl) : null;
   if (broker) {
     const account = await broker.login();
-    log("broker_connected", { env: cfg.tl.env, account: account.accNum });
+    log("broker_connected", { env: cfg.tl.env, accountId: account.id, accNum: account.accNum, server: cfg.tl.server });
   }
   log("bot_start", {
     mode: cfg.mode,
