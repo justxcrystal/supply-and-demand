@@ -15,7 +15,7 @@ screenshots/*.json
 !.env.example
 *.log
 .DS_Store
-
+bot/.state.json
 
 attachments/
 .grok/*
